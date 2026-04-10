@@ -10,6 +10,7 @@ import {
 	Value,
 	ViewOption,
 	Notice,
+	Menu,
 	setIcon,
 } from "obsidian";
 import type BasesStructurePlugin from "./main";
@@ -45,6 +46,8 @@ interface DragState {
 
 const VIEW_TYPE = "structure";
 const DEFAULT_RELATION_PROPERTY = "up";
+/** Passed to `file-menu` so plugins can tell this view from e.g. File explorer. */
+const FILE_MENU_SOURCE = "bases-structure";
 
 export class StructureView extends BasesView {
 	type = VIEW_TYPE;
@@ -120,6 +123,23 @@ export class StructureView extends BasesView {
 				}
 			}
 			this.render();
+		});
+
+		this.plugin.registerDomEvent(this.containerEl, "contextmenu", (evt: MouseEvent) => {
+			const row = (evt.target as HTMLElement).closest(
+				".bases-structure-row",
+			) as HTMLElement | null;
+			if (!row) return;
+			const path = row.getAttr("data-file-path");
+			if (!path) return;
+			const file = this.app.vault.getAbstractFileByPath(path);
+			if (!(file instanceof TFile)) return;
+			evt.preventDefault();
+			evt.stopPropagation();
+			const menu = new Menu();
+			this.app.workspace.trigger("file-menu", menu, file, FILE_MENU_SOURCE);
+			this.addChild(menu);
+			menu.showAtMouseEvent(evt);
 		});
 	}
 
@@ -326,7 +346,9 @@ export class StructureView extends BasesView {
 	private nodeNameMatchesFilter(node: TreeNode): boolean {
 		const q = this.filterQuery.trim().toLowerCase();
 		if (!q) return false;
-		return node.entry.file.basename.toLowerCase().includes(q);
+		const hay = this.formatEntryRowLabel(node.entry).toLowerCase();
+		const base = node.entry.file.basename.toLowerCase();
+		return hay.includes(q) || base.includes(q);
 	}
 
 	/** Show node, path to matches, and full subtree under any matching node. */
@@ -372,6 +394,38 @@ export class StructureView extends BasesView {
 
 	private getRelationPropertyId(): BasesPropertyId {
 		return `note.${this.relationProperty}` as BasesPropertyId;
+	}
+
+	/**
+	 * Property column order from Bases: {@link BasesViewConfig.getOrder}, or visible
+	 * properties from the query when order is empty (see {@link BasesQueryResult.properties}).
+	 */
+	private getVisiblePropertyIds(): BasesPropertyId[] {
+		const ordered = this.config?.getOrder() ?? [];
+		if (ordered.length > 0) {
+			return ordered;
+		}
+		return this.data?.properties ?? [];
+	}
+
+	/** Text for the tree row: visible Bases columns joined, or basename if none / all empty. */
+	private formatEntryRowLabel(entry: BasesEntry): string {
+		const ids = this.getVisiblePropertyIds();
+		if (ids.length === 0) {
+			return entry.file.basename;
+		}
+		const parts: string[] = [];
+		for (const id of ids) {
+			const value = entry.getValue(id);
+			if (value == null || value instanceof NullValue) {
+				continue;
+			}
+			const s = value.toString().trim();
+			if (s.length > 0) {
+				parts.push(s);
+			}
+		}
+		return parts.length > 0 ? parts.join(" · ") : entry.file.basename;
 	}
 
 	/**
@@ -609,7 +663,7 @@ export class StructureView extends BasesView {
 		const titleEl = rowEl.createDiv({ cls: "bases-structure-title" });
 		const linkEl = titleEl.createEl("a", {
 			cls: "internal-link",
-			text: node.entry.file.basename,
+			text: this.formatEntryRowLabel(node.entry),
 			attr: { href: node.filePath },
 		});
 		linkEl.addEventListener("click", (evt) => {
