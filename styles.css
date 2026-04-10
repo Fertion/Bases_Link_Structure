@@ -173,6 +173,12 @@
 	background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
 }
 
+.bases-structure-row.is-selected {
+	background: color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+	outline: 1px solid var(--interactive-accent);
+	outline-offset: -1px;
+}
+
 .bases-structure-empty {
 	color: var(--text-muted);
 }
