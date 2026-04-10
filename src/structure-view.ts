@@ -48,6 +48,13 @@ export class StructureView extends BasesView {
 	/** Local tree filter (does not use Bases query — keeps full entry set). */
 	private filterQuery = "";
 	private searchDebounceHandle: number | undefined;
+	private toolbarEl: HTMLElement | null = null;
+	private treeMountEl: HTMLElement | null = null;
+	private searchWrapEl: HTMLElement | null = null;
+	private searchInputEl: HTMLInputElement | null = null;
+	private searchClearBtn: HTMLButtonElement | null = null;
+	/** Latest tree from last render; used by toolbar actions wired once. */
+	private lastBuiltTree: TreeNode[] = [];
 
 	constructor(controller: QueryController, scrollEl: HTMLElement, plugin: BasesStructurePlugin) {
 		super(controller);
@@ -82,24 +89,19 @@ export class StructureView extends BasesView {
 	}
 
 	private render(): void {
-		const prevSearch = this.containerEl.querySelector(
-			".bases-structure-search",
-		) as HTMLInputElement | null;
-		let restoreSearchFocus = false;
-		let selStart = 0;
-		let selEnd = 0;
-		if (prevSearch && document.activeElement === prevSearch) {
-			restoreSearchFocus = true;
-			selStart = prevSearch.selectionStart ?? this.filterQuery.length;
-			selEnd = prevSearch.selectionEnd ?? this.filterQuery.length;
-		}
-
-		this.containerEl.empty();
 		this.relationProperty = this.getRelationPropertyFromConfig();
+		this.ensureToolbarShell();
+		this.filterQuery = this.searchInputEl?.value ?? "";
+
+		const treeMount = this.treeMountEl;
+		if (!treeMount) return;
+
+		treeMount.empty();
 
 		const entries = this.getAllEntries();
 		if (entries.length === 0) {
-			this.containerEl.createEl("p", {
+			this.lastBuiltTree = [];
+			treeMount.createEl("p", {
 				text: "No entries found.",
 				cls: "bases-structure-empty",
 			});
@@ -107,12 +109,10 @@ export class StructureView extends BasesView {
 		}
 
 		const tree = this.buildTree(entries);
-		this.renderToolbar(tree, restoreSearchFocus, selStart, selEnd);
-
-		const treeEl = this.containerEl.createDiv({ cls: "bases-structure-tree" });
+		this.lastBuiltTree = tree;
 
 		if (tree.length === 0) {
-			treeEl.createEl("p", {
+			treeMount.createEl("p", {
 				text: "No roots found. Check for cyclic relations.",
 				cls: "bases-structure-empty",
 			});
@@ -124,7 +124,7 @@ export class StructureView extends BasesView {
 		if (filterActive) {
 			const anyVisible = tree.some((root) => this.shouldShowNodeInFilter(root, false));
 			if (!anyVisible) {
-				treeEl.createEl("p", {
+				treeMount.createEl("p", {
 					text: `No notes match "${q}".`,
 					cls: "bases-structure-empty",
 				});
@@ -133,17 +133,15 @@ export class StructureView extends BasesView {
 		}
 
 		for (const root of tree) {
-			this.renderNode(treeEl, root, true, false);
+			this.renderNode(treeMount, root, true, false);
 		}
 	}
 
-	private renderToolbar(
-		tree: TreeNode[],
-		restoreSearchFocus: boolean,
-		selStart: number,
-		selEnd: number,
-	): void {
+	private ensureToolbarShell(): void {
+		if (this.toolbarEl && this.treeMountEl) return;
+
 		const toolbar = this.containerEl.createDiv({ cls: "bases-structure-toolbar" });
+		this.toolbarEl = toolbar;
 
 		const toolbarLeft = toolbar.createDiv({ cls: "bases-structure-toolbar-left" });
 
@@ -163,7 +161,7 @@ export class StructureView extends BasesView {
 
 		expandBtn.addEventListener("click", (evt) => {
 			evt.preventDefault();
-			this.expandAllFromTree(tree);
+			this.expandAllFromTree(this.lastBuiltTree);
 			this.render();
 		});
 
@@ -174,9 +172,8 @@ export class StructureView extends BasesView {
 		});
 
 		const searchWrap = toolbar.createDiv({ cls: "bases-structure-search-wrap" });
-		if (this.filterQuery.trim().length > 0) {
-			searchWrap.addClass("has-value");
-		}
+		this.searchWrapEl = searchWrap;
+
 		const searchInput = searchWrap.createEl("input", {
 			cls: "bases-structure-search",
 			type: "search",
@@ -186,28 +183,29 @@ export class StructureView extends BasesView {
 				spellcheck: "false",
 			},
 		});
-		searchInput.value = this.filterQuery;
-		if (this.filterQuery.trim().length > 0) {
-			const clearBtn = searchWrap.createEl("button", {
-				cls: "bases-structure-search-clear clickable-icon",
-				attr: { type: "button", "aria-label": "Clear filter" },
-			});
-			setIcon(clearBtn, "x");
-			clearBtn.addEventListener("click", (evt) => {
-				evt.preventDefault();
-				evt.stopPropagation();
-				this.filterQuery = "";
-				this.render();
-				requestAnimationFrame(() => {
-					const inp = this.containerEl.querySelector(
-						".bases-structure-search",
-					) as HTMLInputElement | null;
-					inp?.focus();
-				});
-			});
-		}
+		this.searchInputEl = searchInput;
+
+		const clearBtn = searchWrap.createEl("button", {
+			cls: "bases-structure-search-clear clickable-icon",
+			attr: { type: "button", "aria-label": "Clear filter" },
+		});
+		this.searchClearBtn = clearBtn;
+		setIcon(clearBtn, "x");
+		clearBtn.style.display = "none";
+
+		clearBtn.addEventListener("click", (evt) => {
+			evt.preventDefault();
+			evt.stopPropagation();
+			searchInput.value = "";
+			this.filterQuery = "";
+			this.updateSearchAdornments();
+			this.render();
+			requestAnimationFrame(() => searchInput.focus());
+		});
+
 		searchInput.addEventListener("input", () => {
 			this.filterQuery = searchInput.value;
+			this.updateSearchAdornments();
 			window.clearTimeout(this.searchDebounceHandle);
 			this.searchDebounceHandle = window.setTimeout(() => {
 				this.render();
@@ -216,21 +214,22 @@ export class StructureView extends BasesView {
 		searchInput.addEventListener("keydown", (evt) => {
 			if (evt.key === "Escape") {
 				evt.stopPropagation();
-				this.filterQuery = "";
 				searchInput.value = "";
+				this.filterQuery = "";
+				this.updateSearchAdornments();
 				this.render();
 			}
 		});
 
-		if (restoreSearchFocus) {
-			requestAnimationFrame(() => {
-				searchInput.focus();
-				const len = this.filterQuery.length;
-				const a = Math.min(selStart, len);
-				const b = Math.min(selEnd, len);
-				searchInput.setSelectionRange(a, b);
-			});
-		}
+		const treeMount = this.containerEl.createDiv({ cls: "bases-structure-tree" });
+		this.treeMountEl = treeMount;
+	}
+
+	private updateSearchAdornments(): void {
+		if (!this.searchWrapEl || !this.searchClearBtn || !this.searchInputEl) return;
+		const has = this.searchInputEl.value.trim().length > 0;
+		this.searchWrapEl.toggleClass("has-value", has);
+		this.searchClearBtn.style.display = has ? "inline-flex" : "none";
 	}
 
 	private expandAllFromTree(nodes: TreeNode[]): void {
