@@ -27,7 +27,6 @@
 	margin-bottom: 10px;
 	padding-bottom: 8px;
 	border-bottom: 1px solid var(--background-modifier-border);
-	background: var(--background-primary);
 }
 
 .bases-structure-tree-scroll {
@@ -63,7 +62,7 @@
 	padding: 4px 10px;
 	border-radius: var(--input-radius);
 	border: 1px solid var(--background-modifier-border);
-	background: var(--background-primary);
+	background: var(--background-modifier-form-field);
 	font-size: var(--font-ui-small);
 }
 
