@@ -84,6 +84,12 @@ export class StructureView extends BasesView {
 	}
 
 	onload(): void {
+		this.plugin.registerEvent(
+			this.app.workspace.on("active-leaf-change", () => {
+				this.syncActiveFileHighlight(true);
+			}),
+		);
+
 		this.plugin.registerDomEvent(this.containerEl, "click", (evt: MouseEvent) => {
 			const target = evt.target as HTMLElement;
 			if (target.closest(".bases-structure-toggle")) return;
@@ -135,53 +141,78 @@ export class StructureView extends BasesView {
 	}
 
 	private render(): void {
-		this.relationProperty = this.getRelationPropertyFromConfig();
-		this.ensureToolbarShell();
-		this.filterQuery = this.searchInputEl?.value ?? "";
+		try {
+			this.relationProperty = this.getRelationPropertyFromConfig();
+			this.ensureToolbarShell();
+			this.filterQuery = this.searchInputEl?.value ?? "";
 
-		const treeMount = this.treeMountEl;
-		if (!treeMount) return;
+			const treeMount = this.treeMountEl;
+			if (!treeMount) return;
 
-		treeMount.empty();
+			treeMount.empty();
 
-		const entries = this.getAllEntries();
-		if (entries.length === 0) {
-			this.lastBuiltTree = [];
-			treeMount.createEl("p", {
-				text: "No entries found.",
-				cls: "bases-structure-empty",
-			});
-			return;
-		}
-
-		const tree = this.buildTree(entries);
-		this.lastBuiltTree = tree;
-
-		if (tree.length === 0) {
-			treeMount.createEl("p", {
-				text: "No roots found. Check for cyclic relations.",
-				cls: "bases-structure-empty",
-			});
-			return;
-		}
-
-		const q = this.filterQuery.trim();
-		const filterActive = q.length > 0;
-		this.filterVisibilityCache = filterActive ? new Map() : null;
-		if (filterActive) {
-			const anyVisible = tree.some((root) => this.shouldShowNodeInFilter(root, false));
-			if (!anyVisible) {
+			const entries = this.getAllEntries();
+			if (entries.length === 0) {
+				this.lastBuiltTree = [];
 				treeMount.createEl("p", {
-					text: `No notes match "${q}".`,
+					text: "No entries found.",
 					cls: "bases-structure-empty",
 				});
 				return;
 			}
-		}
 
-		this.visibleRowOrder = [];
-		for (const root of tree) {
-			this.renderNode(treeMount, root, true, false);
+			const tree = this.buildTree(entries);
+			this.lastBuiltTree = tree;
+
+			if (tree.length === 0) {
+				treeMount.createEl("p", {
+					text: "No roots found. Check for cyclic relations.",
+					cls: "bases-structure-empty",
+				});
+				return;
+			}
+
+			const q = this.filterQuery.trim();
+			const filterActive = q.length > 0;
+			this.filterVisibilityCache = filterActive ? new Map() : null;
+			if (filterActive) {
+				const anyVisible = tree.some((root) => this.shouldShowNodeInFilter(root, false));
+				if (!anyVisible) {
+					treeMount.createEl("p", {
+						text: `No notes match "${q}".`,
+						cls: "bases-structure-empty",
+					});
+					return;
+				}
+			}
+
+			this.visibleRowOrder = [];
+			for (const root of tree) {
+				this.renderNode(treeMount, root, true, false);
+			}
+		} finally {
+			this.syncActiveFileHighlight(false);
+		}
+	}
+
+	/** Highlights rows whose `data-file-path` matches the editor’s active note. */
+	private syncActiveFileHighlight(scrollToRow: boolean): void {
+		const active = this.app.workspace.getActiveFile();
+		const path = active?.path ?? "";
+		const rows = this.containerEl.querySelectorAll(".bases-structure-row");
+		let firstMatch: HTMLElement | null = null;
+		for (const el of Array.from(rows)) {
+			const row = el as HTMLElement;
+			row.removeClass("is-active-file");
+			if (path && row.getAttr("data-file-path") === path) {
+				row.addClass("is-active-file");
+				if (!firstMatch) {
+					firstMatch = row;
+				}
+			}
+		}
+		if (scrollToRow && firstMatch) {
+			firstMatch.scrollIntoView({ block: "nearest", inline: "nearest" });
 		}
 	}
 

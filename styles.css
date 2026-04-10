@@ -179,6 +179,15 @@
 	outline-offset: -1px;
 }
 
+.bases-structure-row.is-active-file {
+	background: color-mix(in srgb, var(--interactive-accent) 42%, transparent);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 65%, transparent);
+}
+
+.bases-structure-row.is-active-file:hover {
+	background: color-mix(in srgb, var(--interactive-accent) 50%, transparent);
+}
+
 .bases-structure-empty {
 	color: var(--text-muted);
 }
