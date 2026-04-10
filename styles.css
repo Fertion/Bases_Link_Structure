@@ -93,6 +93,10 @@
 	background: var(--background-modifier-hover);
 }
 
+.bases-structure-row[data-has-children="true"] {
+	cursor: pointer;
+}
+
 .bases-structure-toggle-wrap {
 	width: 16px;
 	height: 16px;

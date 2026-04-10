@@ -56,7 +56,18 @@ export class StructureView extends BasesView {
 		this.containerEl = scrollEl.createDiv({ cls: "bases-structure-container" });
 	}
 
-	onload(): void {}
+	onload(): void {
+		this.plugin.registerDomEvent(this.containerEl, "click", (evt: MouseEvent) => {
+			const target = evt.target as HTMLElement;
+			if (target.closest("a.internal-link")) return;
+			const row = target.closest(".bases-structure-row") as HTMLElement | null;
+			if (!row || row.getAttr("data-has-children") !== "true") return;
+			const path = row.getAttr("data-file-path");
+			if (!path) return;
+			this.toggleExpanded(path);
+			this.render();
+		});
+	}
 
 	onunload(): void {
 		window.clearTimeout(this.searchDebounceHandle);
@@ -423,12 +434,14 @@ export class StructureView extends BasesView {
 		const itemEl = parentEl.createDiv({ cls: "bases-structure-item" });
 		itemEl.toggleClass("is-last", isLast);
 
+		const hasChildren = node.children.length > 0;
 		const rowEl = itemEl.createDiv({
 			cls: "bases-structure-row",
 			attr: {
 				"data-file-path": node.filePath,
 				"data-parent-path": node.parentPath ?? "",
 				"data-branch-key": node.branchKey,
+				...(hasChildren ? { "data-has-children": "true" } : {}),
 			},
 		});
 		rowEl.style.display = "flex";
@@ -440,7 +453,6 @@ export class StructureView extends BasesView {
 
 		this.setupDragAndDrop(rowEl, node);
 
-		const hasChildren = node.children.length > 0;
 		const nextUnderMatched =
 			underMatchedParent || (filterActive && this.nodeNameMatchesFilter(node));
 		const anyChildMatchesFilter =
