@@ -174,6 +174,9 @@ export class StructureView extends BasesView {
 		});
 
 		const searchWrap = toolbar.createDiv({ cls: "bases-structure-search-wrap" });
+		if (this.filterQuery.trim().length > 0) {
+			searchWrap.addClass("has-value");
+		}
 		const searchInput = searchWrap.createEl("input", {
 			cls: "bases-structure-search",
 			type: "search",
@@ -184,6 +187,25 @@ export class StructureView extends BasesView {
 			},
 		});
 		searchInput.value = this.filterQuery;
+		if (this.filterQuery.trim().length > 0) {
+			const clearBtn = searchWrap.createEl("button", {
+				cls: "bases-structure-search-clear clickable-icon",
+				attr: { type: "button", "aria-label": "Clear filter" },
+			});
+			setIcon(clearBtn, "x");
+			clearBtn.addEventListener("click", (evt) => {
+				evt.preventDefault();
+				evt.stopPropagation();
+				this.filterQuery = "";
+				this.render();
+				requestAnimationFrame(() => {
+					const inp = this.containerEl.querySelector(
+						".bases-structure-search",
+					) as HTMLInputElement | null;
+					inp?.focus();
+				});
+			});
+		}
 		searchInput.addEventListener("input", () => {
 			this.filterQuery = searchInput.value;
 			window.clearTimeout(this.searchDebounceHandle);
