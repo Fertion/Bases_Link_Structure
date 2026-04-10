@@ -859,8 +859,6 @@ export class StructureView extends BasesView {
 			const links = relationItems.map((item) => item.raw);
 			if (links.length === 0) {
 				delete frontmatter[property];
-			} else if (links.length === 1) {
-				frontmatter[property] = links[0];
 			} else {
 				frontmatter[property] = links;
 			}
