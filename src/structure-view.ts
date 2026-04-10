@@ -72,6 +72,9 @@ export class StructureView extends BasesView {
 	private selectedBranchKeys = new Set<string>();
 	/** Anchor for the next Shift+click range (set on plain row click). */
 	private selectionAnchorBranchKey: string | null = null;
+	/** Memo for `shouldShowNodeInFilter` during one render (filter active). */
+	private filterVisibilityCache: Map<string, boolean> | null = null;
+	private dataUpdateDebounceHandle: number | undefined;
 
 	constructor(controller: QueryController, scrollEl: HTMLElement, plugin: BasesStructurePlugin) {
 		super(controller);
@@ -116,6 +119,7 @@ export class StructureView extends BasesView {
 
 	onunload(): void {
 		window.clearTimeout(this.searchDebounceHandle);
+		window.clearTimeout(this.dataUpdateDebounceHandle);
 	}
 
 	public focus(): void {
@@ -123,7 +127,11 @@ export class StructureView extends BasesView {
 	}
 
 	public onDataUpdated(): void {
-		this.render();
+		window.clearTimeout(this.dataUpdateDebounceHandle);
+		this.dataUpdateDebounceHandle = window.setTimeout(() => {
+			this.dataUpdateDebounceHandle = undefined;
+			this.render();
+		}, 100);
 	}
 
 	private render(): void {
@@ -159,6 +167,7 @@ export class StructureView extends BasesView {
 
 		const q = this.filterQuery.trim();
 		const filterActive = q.length > 0;
+		this.filterVisibilityCache = filterActive ? new Map() : null;
 		if (filterActive) {
 			const anyVisible = tree.some((root) => this.shouldShowNodeInFilter(root, false));
 			if (!anyVisible) {
@@ -293,9 +302,21 @@ export class StructureView extends BasesView {
 	private shouldShowNodeInFilter(node: TreeNode, underMatchedParent: boolean): boolean {
 		const q = this.filterQuery.trim();
 		if (!q) return true;
-		if (underMatchedParent) return true;
-		if (this.nodeNameMatchesFilter(node)) return true;
-		return node.children.some((child) => this.shouldShowNodeInFilter(child, false));
+		const cache = this.filterVisibilityCache;
+		const cacheKey = `${node.branchKey}\0${underMatchedParent}`;
+		if (cache?.has(cacheKey)) {
+			return cache.get(cacheKey)!;
+		}
+		let result: boolean;
+		if (underMatchedParent) {
+			result = true;
+		} else if (this.nodeNameMatchesFilter(node)) {
+			result = true;
+		} else {
+			result = node.children.some((child) => this.shouldShowNodeInFilter(child, false));
+		}
+		cache?.set(cacheKey, result);
+		return result;
 	}
 
 	private getAllEntries(): BasesEntry[] {
@@ -322,17 +343,18 @@ export class StructureView extends BasesView {
 		return `note.${this.relationProperty}` as BasesPropertyId;
 	}
 
-	private buildTree(entries: BasesEntry[]): TreeNode[] {
-		const entryMap = new Map<string, BasesEntry>();
-		for (const entry of entries) {
-			entryMap.set(entry.file.path, entry);
-		}
-
+	/**
+	 * Parent links for all entries (one `extractParentPaths` per entry, shared path set — O(n)).
+	 */
+	private buildRelationMaps(entries: BasesEntry[]): {
+		parentMap: Map<string, string[]>;
+		childrenMap: Map<string, string[]>;
+	} {
+		const availablePaths = new Set(entries.map((e) => e.file.path));
 		const parentMap = new Map<string, string[]>();
 		for (const entry of entries) {
-			parentMap.set(entry.file.path, this.extractParentPaths(entry, entries));
+			parentMap.set(entry.file.path, this.extractParentPaths(entry, availablePaths));
 		}
-
 		const childrenMap = new Map<string, string[]>();
 		for (const [childPath, parents] of parentMap.entries()) {
 			for (const parentPath of parents) {
@@ -341,6 +363,16 @@ export class StructureView extends BasesView {
 				childrenMap.set(parentPath, list);
 			}
 		}
+		return { parentMap, childrenMap };
+	}
+
+	private buildTree(entries: BasesEntry[]): TreeNode[] {
+		const entryMap = new Map<string, BasesEntry>();
+		for (const entry of entries) {
+			entryMap.set(entry.file.path, entry);
+		}
+
+		const { parentMap, childrenMap } = this.buildRelationMaps(entries);
 
 		const roots = entries.filter((entry) => {
 			const parents = parentMap.get(entry.file.path) ?? [];
@@ -400,7 +432,7 @@ export class StructureView extends BasesView {
 		return total;
 	}
 
-	private extractParentPaths(entry: BasesEntry, allEntries: BasesEntry[]): string[] {
+	private extractParentPaths(entry: BasesEntry, availablePaths: Set<string>): string[] {
 		const propertyId = this.getRelationPropertyId();
 		const value = entry.getValue(propertyId);
 		const rawParents: string[] = [];
@@ -415,8 +447,7 @@ export class StructureView extends BasesView {
 			rawParents.push(...this.extractPathsFromFrontmatter(rawFrontmatter, entry.file));
 		}
 
-		const available = new Set(allEntries.map((it) => it.file.path));
-		return Array.from(new Set(rawParents)).filter((path) => available.has(path));
+		return Array.from(new Set(rawParents)).filter((path) => availablePaths.has(path));
 	}
 
 	private extractPathsFromValue(value: Value, currentFile: TFile): string[] {
@@ -504,11 +535,6 @@ export class StructureView extends BasesView {
 				...(hasChildren ? { "data-has-children": "true" } : {}),
 			},
 		});
-		rowEl.style.display = "flex";
-		rowEl.style.alignItems = "center";
-		rowEl.style.width = "100%";
-		rowEl.style.boxSizing = "border-box";
-		rowEl.style.gap = "6px";
 		rowEl.toggleClass("is-root", node.depth === 0);
 		rowEl.toggleClass("is-selected", this.selectedBranchKeys.has(node.branchKey));
 
@@ -550,8 +576,6 @@ export class StructureView extends BasesView {
 		}
 
 		const titleEl = rowEl.createDiv({ cls: "bases-structure-title" });
-		titleEl.style.flex = "1 1 auto";
-		titleEl.style.minWidth = "0";
 		const linkEl = titleEl.createEl("a", {
 			cls: "internal-link",
 			text: node.entry.file.basename,
@@ -573,9 +597,6 @@ export class StructureView extends BasesView {
 			cls: "bases-structure-counter",
 			text: `${node.descendantCount}`,
 		});
-		counterEl.style.marginLeft = "auto";
-		counterEl.style.textAlign = "right";
-
 		if (!hasChildren || !expanded) {
 			return;
 		}
@@ -726,7 +747,8 @@ export class StructureView extends BasesView {
 			if (!sourceEntry || !targetEntry) {
 				continue;
 			}
-			if (this.wouldCreateCycle(entries, item.filePath, targetNode.filePath)) {
+			const { childrenMap } = this.buildRelationMaps(entries);
+			if (this.wouldCreateCycle(item.filePath, targetNode.filePath, childrenMap)) {
 				if (ordered.length === 1) {
 					new Notice("This operation would create a cycle.");
 				}
@@ -749,18 +771,11 @@ export class StructureView extends BasesView {
 		this.render();
 	}
 
-	private wouldCreateCycle(entries: BasesEntry[], sourcePath: string, newParentPath: string): boolean {
-		const childrenMap = new Map<string, string[]>();
-		for (const entry of entries) {
-			const childPath = entry.file.path;
-			const parents = this.extractParentPaths(entry, entries);
-			for (const parent of parents) {
-				const list = childrenMap.get(parent) ?? [];
-				list.push(childPath);
-				childrenMap.set(parent, list);
-			}
-		}
-
+	private wouldCreateCycle(
+		sourcePath: string,
+		newParentPath: string,
+		childrenMap: Map<string, string[]>,
+	): boolean {
 		const stack = [sourcePath];
 		const seen = new Set<string>();
 		while (stack.length > 0) {
