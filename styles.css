@@ -1,5 +1,21 @@
+/* View root from Bases: fill area, no outer scroll — tree scrolls inside. */
+.bases-structure-host {
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 auto;
+	min-height: 0;
+	height: 100%;
+	overflow: hidden;
+}
+
 .bases-structure-container {
+	display: flex;
+	flex-direction: column;
+	flex: 1;
+	min-height: 0;
+	overflow: hidden;
 	padding: 8px 12px;
+	box-sizing: border-box;
 }
 
 .bases-structure-toolbar {
@@ -7,9 +23,19 @@
 	flex-wrap: wrap;
 	align-items: center;
 	gap: 8px;
+	flex: 0 0 auto;
 	margin-bottom: 10px;
 	padding-bottom: 8px;
 	border-bottom: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+}
+
+.bases-structure-tree-scroll {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	overflow-x: hidden;
+	-webkit-overflow-scrolling: touch;
 }
 
 .bases-structure-toolbar-left {

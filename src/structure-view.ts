@@ -55,7 +55,8 @@ export class StructureView extends BasesView {
 	containerEl: HTMLElement;
 	plugin: BasesStructurePlugin;
 
-	private expandedPaths = new Set<string>();
+	/** Expanded state per tree row (`branchKey`), not file path — same note can appear under several parents. */
+	private expandedBranchKeys = new Set<string>();
 	private dragState: DragState | null = null;
 	private relationProperty = DEFAULT_RELATION_PROPERTY;
 	private isCtrlPressed = false;
@@ -78,10 +79,14 @@ export class StructureView extends BasesView {
 	/** Memo for `shouldShowNodeInFilter` during one render (filter active). */
 	private filterVisibilityCache: Map<string, boolean> | null = null;
 	private dataUpdateDebounceHandle: number | undefined;
+	/** Next occurrence index for "Show active file" (cycles; reset when active note path changes). */
+	private showActiveFileNextOccurrenceIndex = 0;
+	private lastActiveFilePathForRevealCycle: string | null = null;
 
 	constructor(controller: QueryController, scrollEl: HTMLElement, plugin: BasesStructurePlugin) {
 		super(controller);
 		this.scrollEl = scrollEl;
+		this.scrollEl.addClass("bases-structure-host");
 		this.plugin = plugin;
 		this.containerEl = scrollEl.createDiv({ cls: "bases-structure-container" });
 	}
@@ -89,7 +94,13 @@ export class StructureView extends BasesView {
 	onload(): void {
 		this.plugin.registerEvent(
 			this.app.workspace.on("active-leaf-change", () => {
-				this.syncActiveFileHighlight(true);
+				const f = this.app.workspace.getActiveFile();
+				const path = f?.path ?? "";
+				if (path !== this.lastActiveFilePathForRevealCycle) {
+					this.showActiveFileNextOccurrenceIndex = 0;
+					this.lastActiveFilePathForRevealCycle = path;
+				}
+				this.syncActiveFileHighlight(true, "nearest");
 			}),
 		);
 
@@ -117,10 +128,7 @@ export class StructureView extends BasesView {
 
 			const hasChildren = row.getAttr("data-has-children") === "true";
 			if (hasChildren) {
-				const path = row.getAttr("data-file-path");
-				if (path) {
-					this.toggleExpanded(path);
-				}
+				this.toggleExpanded(branchKey);
 			}
 			this.render();
 		});
@@ -211,29 +219,47 @@ export class StructureView extends BasesView {
 				this.renderNode(treeMount, root, true, false);
 			}
 		} finally {
-			this.syncActiveFileHighlight(false);
+			this.syncActiveFileHighlight(false, "nearest");
 		}
 	}
 
-	/** Highlights rows whose `data-file-path` matches the editor’s active note. */
-	private syncActiveFileHighlight(scrollToRow: boolean): void {
+	/**
+	 * Highlights rows whose `data-file-path` matches the editor’s active note.
+	 * @returns hasMatch: any such row in the DOM; branchScrolled: if scrolling, the target row was found (see options.scrollToBranchKey).
+	 */
+	private syncActiveFileHighlight(
+		scrollToRow: boolean,
+		scrollBlock: ScrollLogicalPosition = "nearest",
+		options?: { scrollToBranchKey?: string },
+	): { hasMatch: boolean; branchScrolled: boolean } {
 		const active = this.app.workspace.getActiveFile();
 		const path = active?.path ?? "";
 		const rows = this.containerEl.querySelectorAll(".bases-structure-row");
-		let firstMatch: HTMLElement | null = null;
+		const pathMatches: HTMLElement[] = [];
 		for (const el of Array.from(rows)) {
 			const row = el as HTMLElement;
 			row.removeClass("is-active-file");
 			if (path && row.getAttr("data-file-path") === path) {
 				row.addClass("is-active-file");
-				if (!firstMatch) {
-					firstMatch = row;
-				}
+				pathMatches.push(row);
 			}
 		}
-		if (scrollToRow && firstMatch) {
-			firstMatch.scrollIntoView({ block: "nearest", inline: "nearest" });
+		const hasMatch = pathMatches.length > 0;
+		let branchScrolled = true;
+		if (scrollToRow) {
+			let scrollTarget: HTMLElement | null = null;
+			const branchKey = options?.scrollToBranchKey;
+			if (branchKey) {
+				scrollTarget =
+					pathMatches.find((r) => r.getAttr("data-branch-key") === branchKey) ?? null;
+				branchScrolled = scrollTarget !== null;
+			} else {
+				scrollTarget = pathMatches[0] ?? null;
+				branchScrolled = scrollTarget !== null;
+			}
+			scrollTarget?.scrollIntoView({ block: scrollBlock, inline: "nearest" });
 		}
+		return { hasMatch, branchScrolled };
 	}
 
 	private ensureToolbarShell(): void {
@@ -266,8 +292,23 @@ export class StructureView extends BasesView {
 
 		collapseBtn.addEventListener("click", (evt) => {
 			evt.preventDefault();
-			this.expandedPaths.clear();
+			this.expandedBranchKeys.clear();
 			this.render();
+		});
+
+		const revealActiveBtn = toolbarLeft.createEl("button", {
+			cls: "bases-structure-toolbar-btn",
+			text: "Show active file",
+			attr: {
+				type: "button",
+				"aria-label":
+					"Expand path to active note, scroll to it; repeat to cycle duplicate rows",
+			},
+		});
+		setIcon(revealActiveBtn, "scan-search");
+		revealActiveBtn.addEventListener("click", (evt) => {
+			evt.preventDefault();
+			this.revealAndScrollToActiveFile();
 		});
 
 		const searchWrap = toolbar.createDiv({ cls: "bases-structure-search-wrap" });
@@ -320,8 +361,8 @@ export class StructureView extends BasesView {
 			}
 		});
 
-		const treeMount = this.containerEl.createDiv({ cls: "bases-structure-tree" });
-		this.treeMountEl = treeMount;
+		const treeScroll = this.containerEl.createDiv({ cls: "bases-structure-tree-scroll" });
+		this.treeMountEl = treeScroll.createDiv({ cls: "bases-structure-tree" });
 	}
 
 	private updateSearchAdornments(): void {
@@ -335,12 +376,75 @@ export class StructureView extends BasesView {
 		const walk = (list: TreeNode[]) => {
 			for (const node of list) {
 				if (node.children.length > 0) {
-					this.expandedPaths.add(node.filePath);
+					this.expandedBranchKeys.add(node.branchKey);
 					walk(node.children);
 				}
 			}
 		};
 		walk(nodes);
+	}
+
+	/** All root→leaf chains whose leaf matches `targetPath` (preorder of end nodes). */
+	private findAllChainsToFile(nodes: TreeNode[], targetPath: string): TreeNode[][] {
+		const out: TreeNode[][] = [];
+		const walk = (list: TreeNode[], prefix: TreeNode[]) => {
+			for (const node of list) {
+				const chain = [...prefix, node];
+				if (node.filePath === targetPath) {
+					out.push(chain);
+				}
+				if (node.children.length > 0) {
+					walk(node.children, chain);
+				}
+			}
+		};
+		walk(nodes, []);
+		return out;
+	}
+
+	private revealAndScrollToActiveFile(): void {
+		const file = this.app.workspace.getActiveFile();
+		if (!file) {
+			new Notice("No active note.");
+			return;
+		}
+		if (this.lastBuiltTree.length === 0) {
+			new Notice("Nothing to show in this view.");
+			return;
+		}
+		if (file.path !== this.lastActiveFilePathForRevealCycle) {
+			this.showActiveFileNextOccurrenceIndex = 0;
+			this.lastActiveFilePathForRevealCycle = file.path;
+		}
+		const chains = this.findAllChainsToFile(this.lastBuiltTree, file.path);
+		if (chains.length === 0) {
+			new Notice("Active note is not in this base.");
+			return;
+		}
+		const n = chains.length;
+		const idx = this.showActiveFileNextOccurrenceIndex % n;
+		const chain = chains[idx]!;
+		const targetBranchKey = chain[chain.length - 1]!.branchKey;
+
+		for (let i = 0; i < chain.length - 1; i++) {
+			const ancestor = chain[i]!;
+			if (ancestor.children.length > 0) {
+				this.expandedBranchKeys.add(ancestor.branchKey);
+			}
+		}
+		this.showActiveFileNextOccurrenceIndex = (idx + 1) % n;
+
+		this.render();
+		requestAnimationFrame(() => {
+			const { hasMatch, branchScrolled } = this.syncActiveFileHighlight(true, "center", {
+				scrollToBranchKey: targetBranchKey,
+			});
+			if (!hasMatch) {
+				new Notice("Active note is hidden by the current filter.");
+			} else if (!branchScrolled) {
+				new Notice("This occurrence is hidden by the current filter.");
+			}
+		});
 	}
 
 	private nodeNameMatchesFilter(node: TreeNode): boolean {
@@ -641,7 +745,7 @@ export class StructureView extends BasesView {
 			);
 		const expanded =
 			hasChildren &&
-			(this.expandedPaths.has(node.filePath) ||
+			(this.expandedBranchKeys.has(node.branchKey) ||
 				(filterActive && anyChildMatchesFilter));
 
 		const toggleWrap = rowEl.createDiv({ cls: "bases-structure-toggle-wrap" });
@@ -653,7 +757,7 @@ export class StructureView extends BasesView {
 			setIcon(btn, expanded ? "minus" : "plus");
 			btn.addEventListener("click", (evt) => {
 				evt.stopPropagation();
-				this.toggleExpanded(node.filePath);
+				this.toggleExpanded(node.branchKey);
 				this.render();
 			});
 		} else {
@@ -697,11 +801,11 @@ export class StructureView extends BasesView {
 		});
 	}
 
-	private toggleExpanded(filePath: string): void {
-		if (this.expandedPaths.has(filePath)) {
-			this.expandedPaths.delete(filePath);
+	private toggleExpanded(branchKey: string): void {
+		if (this.expandedBranchKeys.has(branchKey)) {
+			this.expandedBranchKeys.delete(branchKey);
 		} else {
-			this.expandedPaths.add(filePath);
+			this.expandedBranchKeys.add(branchKey);
 		}
 	}
 
@@ -851,7 +955,7 @@ export class StructureView extends BasesView {
 		if (moved > 0) {
 			this.selectedBranchKeys.clear();
 			this.selectionAnchorBranchKey = null;
-			this.expandedPaths.add(targetNode.filePath);
+			this.expandedBranchKeys.add(targetNode.branchKey);
 		}
 		this.render();
 	}
