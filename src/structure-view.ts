@@ -58,6 +58,10 @@ export class StructureView extends BasesView {
 	/** Expanded state per tree row (`branchKey`), not file path — same note can appear under several parents. */
 	private expandedBranchKeys = new Set<string>();
 	private dragState: DragState | null = null;
+	/** Row that started the current drag (for dragend cleanup if target is not the row). */
+	private dragSourceRowEl: HTMLElement | null = null;
+	/** Row currently shown as drop target; avoids querySelectorAll on every dragover. */
+	private dropHighlightRowEl: HTMLElement | null = null;
 	private relationProperty = DEFAULT_RELATION_PROPERTY;
 	private isCtrlPressed = false;
 	/** Local tree filter (does not use Bases query — keeps full entry set). */
@@ -82,6 +86,8 @@ export class StructureView extends BasesView {
 	/** Next occurrence index for "Show active file" (cycles; reset when active note path changes). */
 	private showActiveFileNextOccurrenceIndex = 0;
 	private lastActiveFilePathForRevealCycle: string | null = null;
+	/** Path last reflected in row `is-active-file` (for incremental updates on tab change). */
+	private lastPaintedActiveFilePath = "";
 
 	constructor(controller: QueryController, scrollEl: HTMLElement, plugin: BasesStructurePlugin) {
 		super(controller);
@@ -149,6 +155,108 @@ export class StructureView extends BasesView {
 			this.addChild(menu);
 			menu.showAtMouseEvent(evt);
 		});
+
+		this.registerDelegatedTreeDragDrop();
+	}
+
+	/** One listener set for the whole tree; avoids per-row addEventListener on every render. */
+	private registerDelegatedTreeDragDrop(): void {
+		this.plugin.registerDomEvent(this.containerEl, "dragstart", (evt: DragEvent) => {
+			const row = (evt.target as HTMLElement).closest(
+				".bases-structure-row",
+			) as HTMLElement | null;
+			if (!row || !evt.dataTransfer) return;
+
+			const branchKey = row.getAttr("data-branch-key");
+			const filePath = row.getAttr("data-file-path");
+			const parentPathRaw = row.getAttr("data-parent-path");
+			if (!branchKey || !filePath) return;
+
+			const parentPath: ParentPath =
+				parentPathRaw && parentPathRaw.length > 0 ? parentPathRaw : null;
+
+			const fromSelection =
+				this.selectedBranchKeys.has(branchKey) && this.selectedBranchKeys.size > 0;
+			let sources: DragSourceItem[] = this.visibleRowOrder
+				.filter((r) => this.selectedBranchKeys.has(r.branchKey))
+				.map((r) => ({ filePath: r.filePath, parentPath: r.parentPath }));
+			if (!fromSelection) {
+				this.selectedBranchKeys.clear();
+				sources = [{ filePath, parentPath }];
+			}
+			sources = this.dedupeDragSources(sources);
+			if (sources.length === 0) {
+				sources = [{ filePath, parentPath }];
+			}
+			this.dragState = {
+				sources,
+				isCopyMode: evt.ctrlKey,
+			};
+			this.isCtrlPressed = evt.ctrlKey;
+			evt.dataTransfer.effectAllowed = "copyMove";
+			evt.dataTransfer.setData(
+				"text/plain",
+				sources.map((s) => s.filePath).join("\n"),
+			);
+			row.addClass("is-dragging");
+			this.dragSourceRowEl = row;
+		});
+
+		this.plugin.registerDomEvent(this.containerEl, "dragend", (evt: DragEvent) => {
+			const row =
+				(evt.target as HTMLElement).closest(".bases-structure-row") ??
+				this.dragSourceRowEl;
+			this.dragState = null;
+			this.isCtrlPressed = false;
+			this.clearDropHighlights();
+			row?.removeClass("is-dragging");
+			this.dragSourceRowEl = null;
+		});
+
+		this.plugin.registerDomEvent(this.containerEl, "dragover", (evt: DragEvent) => {
+			if (!this.dragState) return;
+			const row = (evt.target as HTMLElement).closest(
+				".bases-structure-row",
+			) as HTMLElement | null;
+			if (!row) return;
+			evt.preventDefault();
+			this.isCtrlPressed = evt.ctrlKey;
+			if (evt.dataTransfer) {
+				evt.dataTransfer.dropEffect = this.isCtrlPressed ? "copy" : "move";
+			}
+			if (this.dropHighlightRowEl !== row) {
+				this.dropHighlightRowEl?.removeClass("is-drop-target");
+				this.dropHighlightRowEl = row;
+				row.addClass("is-drop-target");
+			}
+		});
+
+		this.plugin.registerDomEvent(this.containerEl, "dragleave", (evt: DragEvent) => {
+			if (!this.dragState) return;
+			const row = (evt.target as HTMLElement).closest(
+				".bases-structure-row",
+			) as HTMLElement | null;
+			if (!row) return;
+			const related = evt.relatedTarget as HTMLElement | null;
+			if (related && row.contains(related)) return;
+			row.removeClass("is-drop-target");
+			if (this.dropHighlightRowEl === row) {
+				this.dropHighlightRowEl = null;
+			}
+		});
+
+		this.plugin.registerDomEvent(this.containerEl, "drop", (evt: DragEvent) => {
+			const row = (evt.target as HTMLElement).closest(
+				".bases-structure-row",
+			) as HTMLElement | null;
+			if (!row) return;
+			const filePath = row.getAttr("data-file-path");
+			const branchKey = row.getAttr("data-branch-key");
+			if (!filePath || !branchKey) return;
+			evt.preventDefault();
+			const copyMode = evt.ctrlKey || this.isCtrlPressed || this.dragState?.isCopyMode === true;
+			void this.handleDropOnFile(filePath, branchKey, copyMode);
+		});
 	}
 
 	onunload(): void {
@@ -169,58 +277,57 @@ export class StructureView extends BasesView {
 	}
 
 	private render(): void {
-		try {
-			this.relationProperty = this.getRelationPropertyFromConfig();
-			this.ensureToolbarShell();
-			this.filterQuery = this.searchInputEl?.value ?? "";
+		this.relationProperty = this.getRelationPropertyFromConfig();
+		this.ensureToolbarShell();
+		this.filterQuery = this.searchInputEl?.value ?? "";
 
-			const treeMount = this.treeMountEl;
-			if (!treeMount) return;
+		const treeMount = this.treeMountEl;
+		if (!treeMount) return;
 
-			treeMount.empty();
+		treeMount.empty();
+		this.lastPaintedActiveFilePath = "";
 
-			const entries = this.getAllEntries();
-			if (entries.length === 0) {
-				this.lastBuiltTree = [];
-				treeMount.createEl("p", {
-					text: "No entries found.",
-					cls: "bases-structure-empty",
-				});
-				return;
-			}
-
-			const tree = this.buildTree(entries);
-			this.lastBuiltTree = tree;
-
-			if (tree.length === 0) {
-				treeMount.createEl("p", {
-					text: "No roots found. Check for cyclic relations.",
-					cls: "bases-structure-empty",
-				});
-				return;
-			}
-
-			const q = this.filterQuery.trim();
-			const filterActive = q.length > 0;
-			this.filterVisibilityCache = filterActive ? new Map() : null;
-			if (filterActive) {
-				const anyVisible = tree.some((root) => this.shouldShowNodeInFilter(root, false));
-				if (!anyVisible) {
-					treeMount.createEl("p", {
-						text: `No notes match "${q}".`,
-						cls: "bases-structure-empty",
-					});
-					return;
-				}
-			}
-
-			this.visibleRowOrder = [];
-			for (const root of tree) {
-				this.renderNode(treeMount, root, true, false);
-			}
-		} finally {
-			this.syncActiveFileHighlight(false, "nearest");
+		const entries = this.getAllEntries();
+		if (entries.length === 0) {
+			this.lastBuiltTree = [];
+			treeMount.createEl("p", {
+				text: "No entries found.",
+				cls: "bases-structure-empty",
+			});
+			return;
 		}
+
+		const tree = this.buildTree(entries);
+		this.lastBuiltTree = tree;
+
+		if (tree.length === 0) {
+			treeMount.createEl("p", {
+				text: "No roots found. Check for cyclic relations.",
+				cls: "bases-structure-empty",
+			});
+			return;
+		}
+
+		const q = this.filterQuery.trim();
+		const filterActive = q.length > 0;
+		this.filterVisibilityCache = filterActive ? new Map() : null;
+		if (filterActive) {
+			const anyVisible = tree.some((root) => this.shouldShowNodeInFilter(root, false));
+			if (!anyVisible) {
+				treeMount.createEl("p", {
+					text: `No notes match "${q}".`,
+					cls: "bases-structure-empty",
+				});
+				return;
+			}
+		}
+
+		const activePath = this.app.workspace.getActiveFile()?.path ?? "";
+		this.visibleRowOrder = [];
+		for (const root of tree) {
+			this.renderNode(treeMount, root, true, false, activePath);
+		}
+		this.lastPaintedActiveFilePath = activePath;
 	}
 
 	/**
@@ -232,18 +339,9 @@ export class StructureView extends BasesView {
 		scrollBlock: ScrollLogicalPosition = "nearest",
 		options?: { scrollToBranchKey?: string },
 	): { hasMatch: boolean; branchScrolled: boolean } {
-		const active = this.app.workspace.getActiveFile();
-		const path = active?.path ?? "";
-		const rows = this.containerEl.querySelectorAll(".bases-structure-row");
-		const pathMatches: HTMLElement[] = [];
-		for (const el of Array.from(rows)) {
-			const row = el as HTMLElement;
-			row.removeClass("is-active-file");
-			if (path && row.getAttr("data-file-path") === path) {
-				row.addClass("is-active-file");
-				pathMatches.push(row);
-			}
-		}
+		const path = this.app.workspace.getActiveFile()?.path ?? "";
+		this.patchActiveFileHighlightInDom(path);
+		const pathMatches = this.queryRowElsByFilePath(path);
 		const hasMatch = pathMatches.length > 0;
 		let branchScrolled = true;
 		if (scrollToRow) {
@@ -260,6 +358,34 @@ export class StructureView extends BasesView {
 			scrollTarget?.scrollIntoView({ block: scrollBlock, inline: "nearest" });
 		}
 		return { hasMatch, branchScrolled };
+	}
+
+	private activeRowSelectorForPath(filePath: string): string {
+		return `.bases-structure-row[data-file-path="${CSS.escape(filePath)}"]`;
+	}
+
+	private queryRowElsByFilePath(filePath: string): HTMLElement[] {
+		const tm = this.treeMountEl;
+		if (!filePath || !tm) return [];
+		return Array.from(tm.querySelectorAll(this.activeRowSelectorForPath(filePath))) as HTMLElement[];
+	}
+
+	/** Update row classes when the active file changed without a full `render()`. */
+	private patchActiveFileHighlightInDom(newPath: string): void {
+		const tm = this.treeMountEl;
+		if (!tm) return;
+		const oldPath = this.lastPaintedActiveFilePath;
+		if (oldPath && oldPath !== newPath) {
+			Array.from(tm.querySelectorAll(this.activeRowSelectorForPath(oldPath))).forEach((el) => {
+				(el as HTMLElement).removeClass("is-active-file");
+			});
+		}
+		if (newPath && newPath !== oldPath) {
+			Array.from(tm.querySelectorAll(this.activeRowSelectorForPath(newPath))).forEach((el) => {
+				(el as HTMLElement).addClass("is-active-file");
+			});
+		}
+		this.lastPaintedActiveFilePath = newPath;
 	}
 
 	private ensureToolbarShell(): void {
@@ -705,6 +831,7 @@ export class StructureView extends BasesView {
 		node: TreeNode,
 		isLast: boolean,
 		underMatchedParent: boolean,
+		activePath: string,
 	): void {
 		const filterActive = this.filterQuery.trim().length > 0;
 		if (filterActive && !this.shouldShowNodeInFilter(node, underMatchedParent)) {
@@ -726,6 +853,7 @@ export class StructureView extends BasesView {
 		});
 		rowEl.toggleClass("is-root", node.depth === 0);
 		rowEl.toggleClass("is-selected", this.selectedBranchKeys.has(node.branchKey));
+		rowEl.toggleClass("is-active-file", Boolean(activePath) && node.filePath === activePath);
 
 		this.visibleRowOrder.push({
 			branchKey: node.branchKey,
@@ -734,7 +862,7 @@ export class StructureView extends BasesView {
 			depth: node.depth,
 		});
 
-		this.setupDragAndDrop(rowEl, node);
+		rowEl.setAttr("draggable", "true");
 
 		const nextUnderMatched =
 			underMatchedParent || (filterActive && this.nodeNameMatchesFilter(node));
@@ -797,6 +925,7 @@ export class StructureView extends BasesView {
 				child,
 				index === node.children.length - 1,
 				nextUnderMatched,
+				activePath,
 			);
 		});
 	}
@@ -848,75 +977,16 @@ export class StructureView extends BasesView {
 		});
 	}
 
-	private setupDragAndDrop(rowEl: HTMLElement, node: TreeNode): void {
-		rowEl.setAttr("draggable", "true");
-
-		rowEl.addEventListener("dragstart", (evt) => {
-			if (!evt.dataTransfer) return;
-			const fromSelection =
-				this.selectedBranchKeys.has(node.branchKey) && this.selectedBranchKeys.size > 0;
-			let sources: DragSourceItem[] = this.visibleRowOrder
-				.filter((r) => this.selectedBranchKeys.has(r.branchKey))
-				.map((r) => ({ filePath: r.filePath, parentPath: r.parentPath }));
-			if (!fromSelection) {
-				this.selectedBranchKeys.clear();
-				sources = [{ filePath: node.filePath, parentPath: node.parentPath }];
-			}
-			sources = this.dedupeDragSources(sources);
-			if (sources.length === 0) {
-				sources = [{ filePath: node.filePath, parentPath: node.parentPath }];
-			}
-			this.dragState = {
-				sources,
-				isCopyMode: evt.ctrlKey,
-			};
-			this.isCtrlPressed = evt.ctrlKey;
-			// Must allow both move and copy so Ctrl+drop can use dropEffect "copy".
-			// With effectAllowed "move" only, the browser blocks copy and shows "not allowed".
-			evt.dataTransfer.effectAllowed = "copyMove";
-			evt.dataTransfer.setData(
-				"text/plain",
-				sources.map((s) => s.filePath).join("\n"),
-			);
-			rowEl.addClass("is-dragging");
-		});
-
-		rowEl.addEventListener("dragend", () => {
-			this.dragState = null;
-			this.isCtrlPressed = false;
-			this.clearDropHighlights();
-			rowEl.removeClass("is-dragging");
-		});
-
-		rowEl.addEventListener("dragover", (evt) => {
-			if (!this.dragState) return;
-			evt.preventDefault();
-			this.isCtrlPressed = evt.ctrlKey;
-			evt.dataTransfer!.dropEffect = this.isCtrlPressed ? "copy" : "move";
-			this.clearDropHighlights();
-			rowEl.addClass("is-drop-target");
-		});
-
-		rowEl.addEventListener("dragleave", (evt) => {
-			const related = evt.relatedTarget as HTMLElement | null;
-			if (related && rowEl.contains(related)) return;
-			rowEl.removeClass("is-drop-target");
-		});
-
-		rowEl.addEventListener("drop", (evt) => {
-			evt.preventDefault();
-			const copyMode = evt.ctrlKey || this.isCtrlPressed || this.dragState?.isCopyMode === true;
-			void this.handleDropOnNode(node, copyMode);
-		});
-	}
-
 	private clearDropHighlights(): void {
-		this.containerEl.querySelectorAll(".is-drop-target").forEach((el) => {
-			el.removeClass("is-drop-target");
-		});
+		this.dropHighlightRowEl?.removeClass("is-drop-target");
+		this.dropHighlightRowEl = null;
 	}
 
-	private async handleDropOnNode(targetNode: TreeNode, isCopyMode: boolean): Promise<void> {
+	private async handleDropOnFile(
+		targetFilePath: string,
+		targetBranchKey: string,
+		isCopyMode: boolean,
+	): Promise<void> {
 		const drag = this.dragState;
 		this.dragState = null;
 		this.isCtrlPressed = false;
@@ -926,36 +996,44 @@ export class StructureView extends BasesView {
 		const ordered = this.sortSourcesDeepestFirst(drag.sources);
 		let moved = 0;
 		for (const item of ordered) {
-			if (item.filePath === targetNode.filePath) {
+			if (item.filePath === targetFilePath) {
 				continue;
 			}
 			const entries = this.getAllEntries();
 			const entryMap = new Map(entries.map((e) => [e.file.path, e] as const));
 			const sourceEntry = entryMap.get(item.filePath);
-			const targetEntry = entryMap.get(targetNode.filePath);
+			const targetEntry = entryMap.get(targetFilePath);
 			if (!sourceEntry || !targetEntry) {
 				continue;
 			}
 			const { childrenMap } = this.buildRelationMaps(entries);
-			if (this.wouldCreateCycle(item.filePath, targetNode.filePath, childrenMap)) {
+			if (this.wouldCreateCycle(item.filePath, targetFilePath, childrenMap)) {
 				if (ordered.length === 1) {
 					new Notice("This operation would create a cycle.");
 				}
 				continue;
 			}
-			await this.updateRelationForMove(
-				sourceEntry.file,
-				targetEntry.file.path,
-				item.parentPath,
-				isCopyMode,
-			);
-			moved += 1;
+			try {
+				await this.updateRelationForMove(
+					sourceEntry.file,
+					targetEntry.file.path,
+					item.parentPath,
+					isCopyMode,
+				);
+				moved += 1;
+			} catch (err) {
+				const detail = err instanceof Error ? err.message : String(err);
+				new Notice(
+					`Could not save relation for "${sourceEntry.file.basename}": ${detail}`,
+					8000,
+				);
+			}
 		}
 
 		if (moved > 0) {
 			this.selectedBranchKeys.clear();
 			this.selectionAnchorBranchKey = null;
-			this.expandedBranchKeys.add(targetNode.branchKey);
+			this.expandedBranchKeys.add(targetBranchKey);
 		}
 		this.render();
 	}
