@@ -104,13 +104,13 @@ export class StructureView extends BasesView {
 	onload(): void {
 		this.plugin.registerEvent(
 			this.app.workspace.on("active-leaf-change", () => {
-				const f = this.app.workspace.getActiveFile();
-				const path = f?.path ?? "";
-				if (path !== this.lastActiveFilePathForRevealCycle) {
-					this.showActiveFileNextOccurrenceIndex = 0;
-					this.lastActiveFilePathForRevealCycle = path;
-				}
-				this.syncActiveFileHighlight(true, "nearest");
+				this.refreshActiveFileHighlightFromWorkspace();
+			}),
+		);
+		/** Same-leaf file switches do not always fire `active-leaf-change`; keep row highlight in sync. */
+		this.plugin.registerEvent(
+			this.app.workspace.on("file-open", () => {
+				this.refreshActiveFileHighlightFromWorkspace();
 			}),
 		);
 
@@ -199,10 +199,7 @@ export class StructureView extends BasesView {
 			};
 			this.isCtrlPressed = evt.ctrlKey;
 			evt.dataTransfer.effectAllowed = "copyMove";
-			evt.dataTransfer.setData(
-				"text/plain",
-				sources.map((s) => s.filePath).join("\n"),
-			);
+			this.setNoteDragPlainText(evt.dataTransfer, sources);
 			row.addClass("is-dragging");
 			this.dragSourceRowEl = row;
 		});
@@ -276,6 +273,24 @@ export class StructureView extends BasesView {
 			const copyMode = evt.ctrlKey || this.isCtrlPressed || this.dragState?.isCopyMode === true;
 			void this.handleDropOnFile(filePath, branchKey, copyMode);
 		});
+	}
+
+	/**
+	 * Clipboard payload when dragging notes into the editor: wikilink or Markdown link per vault settings
+	 * (see {@link FileManager.generateMarkdownLink}), not a raw path or `app://` URL.
+	 */
+	private setNoteDragPlainText(dataTransfer: DataTransfer, sources: DragSourceItem[]): void {
+		const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
+		const lines: string[] = [];
+		for (const s of sources) {
+			const file = this.app.vault.getAbstractFileByPath(s.filePath);
+			if (file instanceof TFile) {
+				lines.push(this.app.fileManager.generateMarkdownLink(file, sourcePath));
+			} else {
+				lines.push(s.filePath);
+			}
+		}
+		dataTransfer.setData("text/plain", lines.join("\n"));
 	}
 
 	/** Pixels to add to `scrollTop` this frame (negative = up), or 0 if pointer outside edge bands. */
@@ -403,6 +418,21 @@ export class StructureView extends BasesView {
 			this.renderNode(treeMount, root, true, false, activePath);
 		}
 		this.lastPaintedActiveFilePath = activePath;
+	}
+
+	/**
+	 * Updates which tree row is marked active for the current workspace note.
+	 * Does not scroll: scrolling is reserved for explicit “Show active file” and reveal flows;
+	 * otherwise focusing the bases pane (active-leaf-change) mimicked that button.
+	 */
+	private refreshActiveFileHighlightFromWorkspace(): void {
+		const f = this.app.workspace.getActiveFile();
+		const path = f?.path ?? "";
+		if (path !== this.lastActiveFilePathForRevealCycle) {
+			this.showActiveFileNextOccurrenceIndex = 0;
+			this.lastActiveFilePathForRevealCycle = path;
+		}
+		this.syncActiveFileHighlight(false, "nearest");
 	}
 
 	/**
@@ -1006,7 +1036,8 @@ export class StructureView extends BasesView {
 		const linkEl = titleEl.createEl("a", {
 			cls: "internal-link",
 			text: this.formatEntryRowLabel(node.entry),
-			attr: { href: node.filePath },
+			/** Native link drags use `app://…` URLs in `text/plain`; row drag uses {@link setNoteDragPlainText}. */
+			attr: { href: node.filePath, draggable: "false" },
 		});
 		linkEl.addEventListener("click", (evt) => {
 			if (evt.shiftKey) {
