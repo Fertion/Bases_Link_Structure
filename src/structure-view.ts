@@ -119,6 +119,17 @@ export class StructureView extends BasesView {
 
 		this.plugin.registerDomEvent(this.containerEl, "click", (evt: MouseEvent) => {
 			const target = evt.target as HTMLElement;
+			const spine = target.closest(".bases-structure-spine") as HTMLElement | null;
+			if (spine) {
+				evt.preventDefault();
+				evt.stopPropagation();
+				const parentKey = spine.getAttr("data-branch-key");
+				if (parentKey) {
+					this.expandedBranchKeys.delete(parentKey);
+					this.render();
+				}
+				return;
+			}
 			if (target.closest(".bases-structure-toggle")) return;
 
 			const row = target.closest(".bases-structure-row") as HTMLElement | null;
@@ -161,6 +172,20 @@ export class StructureView extends BasesView {
 			this.app.workspace.trigger("file-menu", menu, file, FILE_MENU_SOURCE);
 			this.addChild(menu);
 			menu.showAtMouseEvent(evt);
+		});
+
+		this.plugin.registerDomEvent(this.containerEl, "keydown", (evt: KeyboardEvent) => {
+			if (evt.key !== "Enter" && evt.key !== " ") return;
+			const spine = (evt.target as HTMLElement).closest(
+				".bases-structure-spine",
+			) as HTMLElement | null;
+			if (!spine) return;
+			evt.preventDefault();
+			const parentKey = spine.getAttr("data-branch-key");
+			if (parentKey) {
+				this.expandedBranchKeys.delete(parentKey);
+				this.render();
+			}
 		});
 
 		this.registerDelegatedTreeDragDrop();
@@ -1139,7 +1164,15 @@ export class StructureView extends BasesView {
 		}
 
 		const childrenEl = itemEl.createDiv({ cls: "bases-structure-children" });
-		childrenEl.createDiv({ cls: "bases-structure-spine", attr: { "aria-hidden": "true" } });
+		childrenEl.createDiv({
+			cls: "bases-structure-spine",
+			attr: {
+				role: "button",
+				tabindex: "0",
+				"aria-label": "Collapse branch",
+				"data-branch-key": node.branchKey,
+			},
+		});
 		node.children.forEach((child, index) => {
 			this.renderNode(
 				childrenEl,
