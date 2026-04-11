@@ -87,6 +87,9 @@ export class StructureView extends BasesView {
 	/** Memo for `shouldShowNodeInFilter` during one render (filter active). */
 	private filterVisibilityCache: Map<string, boolean> | null = null;
 	private dataUpdateDebounceHandle: number | undefined;
+	/** Coalesced connector layout after render / resize. */
+	private treeConnectorLayoutRaf: number | undefined;
+	private treeLayoutObserver: ResizeObserver | null = null;
 	/** Next occurrence index for "Show active file" (cycles; reset when active note path changes). */
 	private showActiveFileNextOccurrenceIndex = 0;
 	private lastActiveFilePathForRevealCycle: string | null = null;
@@ -352,6 +355,12 @@ export class StructureView extends BasesView {
 		window.clearTimeout(this.searchDebounceHandle);
 		window.clearTimeout(this.dataUpdateDebounceHandle);
 		this.stopDragAutoScroll();
+		if (this.treeConnectorLayoutRaf != null) {
+			window.cancelAnimationFrame(this.treeConnectorLayoutRaf);
+			this.treeConnectorLayoutRaf = undefined;
+		}
+		this.treeLayoutObserver?.disconnect();
+		this.treeLayoutObserver = null;
 	}
 
 	public focus(): void {
@@ -418,6 +427,8 @@ export class StructureView extends BasesView {
 			this.renderNode(treeMount, root, true, false, activePath);
 		}
 		this.lastPaintedActiveFilePath = activePath;
+		this.ensureTreeLayoutObserver();
+		this.scheduleTreeConnectorLayout();
 	}
 
 	/**
@@ -595,6 +606,74 @@ export class StructureView extends BasesView {
 		const treeScroll = this.containerEl.createDiv({ cls: "bases-structure-tree-scroll" });
 		this.treeScrollEl = treeScroll;
 		this.treeMountEl = treeScroll.createDiv({ cls: "bases-structure-tree" });
+		this.ensureTreeLayoutObserver();
+	}
+
+	/** Observe tree size so connector segments stay aligned after layout changes. */
+	private ensureTreeLayoutObserver(): void {
+		const mount = this.treeMountEl;
+		if (!mount) return;
+		if (this.treeLayoutObserver) return;
+		this.treeLayoutObserver = new ResizeObserver(() => {
+			this.scheduleTreeConnectorLayout();
+		});
+		this.plugin.register(() => {
+			this.treeLayoutObserver?.disconnect();
+			this.treeLayoutObserver = null;
+		});
+		this.treeLayoutObserver.observe(mount);
+	}
+
+	private scheduleTreeConnectorLayout(): void {
+		if (this.treeConnectorLayoutRaf != null) return;
+		this.treeConnectorLayoutRaf = window.requestAnimationFrame(() => {
+			this.treeConnectorLayoutRaf = undefined;
+			this.layoutTreeConnectors();
+		});
+	}
+
+	/**
+	 * Positions each `.bases-structure-spine` so the vertical runs from the parent row
+	 * center to the last *direct* child row center only (no tail through deeper subtrees).
+	 */
+	private layoutTreeConnectors(): void {
+		const mount = this.treeMountEl;
+		if (!mount) return;
+		const blocks = mount.querySelectorAll(".bases-structure-children");
+		for (let i = 0; i < blocks.length; i++) {
+			const block = blocks[i] as HTMLElement;
+			const spine = block.querySelector(":scope > .bases-structure-spine") as HTMLElement | null;
+			if (!spine) continue;
+
+			const parentItem = block.parentElement;
+			const parentRow =
+				parentItem?.matches(".bases-structure-item") === true
+					? (parentItem.querySelector(":scope > .bases-structure-row") as HTMLElement | null)
+					: null;
+			const childItems = block.querySelectorAll(":scope > .bases-structure-item");
+			if (!parentRow || childItems.length === 0) {
+				spine.style.top = "0px";
+				spine.style.height = "0px";
+				continue;
+			}
+
+			const lastItem = childItems[childItems.length - 1] as HTMLElement;
+			const lastRow = lastItem.querySelector(":scope > .bases-structure-row") as HTMLElement | null;
+			if (!lastRow) {
+				spine.style.top = "0px";
+				spine.style.height = "0px";
+				continue;
+			}
+
+			const br = block.getBoundingClientRect();
+			const pr = parentRow.getBoundingClientRect();
+			const lr = lastRow.getBoundingClientRect();
+			const topPx = pr.top + pr.height / 2 - br.top;
+			const bottomPx = lr.top + lr.height / 2 - br.top;
+			const h = Math.max(0, bottomPx - topPx);
+			spine.style.top = `${topPx}px`;
+			spine.style.height = `${h}px`;
+		}
 	}
 
 	private updateSearchAdornments(): void {
@@ -1060,6 +1139,7 @@ export class StructureView extends BasesView {
 		}
 
 		const childrenEl = itemEl.createDiv({ cls: "bases-structure-children" });
+		childrenEl.createDiv({ cls: "bases-structure-spine", attr: { "aria-hidden": "true" } });
 		node.children.forEach((child, index) => {
 			this.renderNode(
 				childrenEl,

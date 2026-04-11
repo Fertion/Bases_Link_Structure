@@ -102,21 +102,41 @@
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
+	--bases-structure-tree-line: color-mix(in srgb, var(--text-muted) 78%, var(--text-normal));
+	/* One step of depth: gutter for lines, then toggle (16px) + label. */
+	--bases-structure-indent: 22px;
+	/* Vertical spine starts to the right of the 16px expand icon so the stem can run up into the parent row without crossing +/−. */
+	--bases-structure-spine-left: 17px;
+	--bases-structure-spine-width: 2px;
 }
 
 .bases-structure-item {
 	position: relative;
+	z-index: 1;
 }
 
 .bases-structure-children {
 	position: relative;
-	margin-left: 8px;
-	padding-left: 14px;
-	border-left: 1px solid var(--background-modifier-border);
+	margin-left: 0;
+	padding-left: var(--bases-structure-indent);
+	/* Vertical spine is `.bases-structure-spine` (measured), not a full-height border. */
+}
+
+.bases-structure-spine {
+	position: absolute;
+	z-index: 0;
+	left: var(--bases-structure-spine-left);
+	width: var(--bases-structure-spine-width);
+	top: 0;
+	height: 0;
+	border-radius: 1px;
+	background: var(--bases-structure-tree-line);
+	pointer-events: none;
 }
 
 .bases-structure-row {
 	position: relative;
+	z-index: 1;
 	display: flex;
 	align-items: center;
 	flex-wrap: nowrap;
@@ -132,11 +152,18 @@
 .bases-structure-row:not(.is-root)::before {
 	content: "";
 	position: absolute;
-	left: -14px;
+	z-index: 1;
 	top: 50%;
-	width: 14px;
-	border-top: 1px solid var(--background-modifier-border);
+	/* Horizontal from the right edge of the spine to the row content edge (indent). */
+	--bases-structure-arm: calc(
+		var(--bases-structure-indent) - var(--bases-structure-spine-left) - var(--bases-structure-spine-width)
+	);
+	left: calc(-1 * var(--bases-structure-arm));
+	width: var(--bases-structure-arm);
+	height: 0;
+	border-top: 2px solid var(--bases-structure-tree-line);
 	transform: translateY(-50%);
+	pointer-events: none;
 }
 
 .bases-structure-row:hover {
@@ -148,6 +175,8 @@
 }
 
 .bases-structure-toggle-wrap {
+	position: relative;
+	z-index: 2;
 	width: 16px;
 	height: 16px;
 	display: inline-flex;
