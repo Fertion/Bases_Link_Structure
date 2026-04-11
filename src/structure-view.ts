@@ -891,11 +891,45 @@ export class StructureView extends BasesView {
 		const source = raw.trim();
 		if (!source) return null;
 
+		const mdHref = this.tryExtractMarkdownLinkHref(source);
+		if (mdHref !== null) {
+			const fromMd = this.resolveVaultHrefToPath(mdHref, currentFile);
+			if (fromMd) return fromMd;
+		}
+
 		const wikiMatch = source.match(/\[\[([^\]]+)\]\]/);
 		const wiki = wikiMatch && wikiMatch[1] ? wikiMatch[1] : source;
 		const linkTarget = wiki.split("|")[0]?.trim() ?? "";
 		if (!linkTarget) return null;
 		const resolved = this.app.metadataCache.getFirstLinkpathDest(linkTarget, currentFile.path);
+		if (resolved instanceof TFile) {
+			return resolved.path;
+		}
+		return null;
+	}
+
+	/** First `[label](href)` in the string, or null if none (avoids touching `[[wikilinks]]`). */
+	private tryExtractMarkdownLinkHref(source: string): string | null {
+		if (!source.includes("](")) return null;
+		const m = source.match(/\[([^\]]*)\]\(([^)]+)\)/);
+		if (!m?.[2]) return null;
+		return m[2]!.trim();
+	}
+
+	/** Resolve a vault path or relative `.md` href from a markdown link to canonical file path. */
+	private resolveVaultHrefToPath(href: string, currentFile: TFile): string | null {
+		let path = href.trim();
+		if (!path) return null;
+		if (/^https?:\/\//i.test(path) || /^mailto:/i.test(path)) return null;
+		try {
+			path = decodeURIComponent(path);
+		} catch {
+			/* keep encoded */
+		}
+		const pathOnly = path.split("#")[0] ?? "";
+		if (!pathOnly) return null;
+		const normalized = pathOnly.replace(/\\/g, "/");
+		const resolved = this.app.metadataCache.getFirstLinkpathDest(normalized, currentFile.path);
 		if (resolved instanceof TFile) {
 			return resolved.path;
 		}
@@ -1142,7 +1176,7 @@ export class StructureView extends BasesView {
 		isCopyMode: boolean,
 	): Promise<void> {
 		const property = this.relationProperty;
-		const newParentLink = this.toWikiLink(newParentPath, file);
+		const newParentLink = this.formatRelationLinkToParent(newParentPath, file);
 
 		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
 			const current = frontmatter[property];
@@ -1189,14 +1223,34 @@ export class StructureView extends BasesView {
 		return [];
 	}
 
-	private toWikiLink(path: string, sourceFile: TFile): string {
-		const target = this.app.vault.getAbstractFileByPath(path);
-		if (!(target instanceof TFile)) {
-			const noExt = path.endsWith(".md") ? path.slice(0, -3) : path;
-			return `[[${noExt}]]`;
+	/**
+	 * Link text for `relationProperty` when reparenting — matches vault **Settings → Files & links**
+	 * (wikilinks vs Markdown links) and shortest path, same as the editor.
+	 */
+	private formatRelationLinkToParent(parentPath: string, childFile: TFile): string {
+		const parent = this.app.vault.getAbstractFileByPath(parentPath);
+		if (!(parent instanceof TFile)) {
+			return this.formatFallbackRelationLink(parentPath);
 		}
-		const linktext = this.app.metadataCache.fileToLinktext(target, sourceFile.path, true);
-		return `[[${linktext}]]`;
+		return this.app.fileManager.generateMarkdownLink(parent, childFile.path);
+	}
+
+	private useMarkdownLinksSetting(): boolean {
+		const vault = this.app.vault as unknown as { getConfig?: (key: string) => unknown };
+		return Boolean(vault.getConfig?.("useMarkdownLinks"));
+	}
+
+	/** If the parent file is missing from the vault, approximate user link style (wikilink vs md). */
+	private formatFallbackRelationLink(path: string): string {
+		const useMd = this.useMarkdownLinksSetting();
+		const normalized = path.replace(/\\/g, "/");
+		const stem = normalized.endsWith(".md") ? normalized.slice(0, -3) : normalized;
+		const label = stem.includes("/") ? (stem.split("/").pop() ?? stem) : stem;
+		if (useMd) {
+			const href = encodeURI(normalized + (normalized.endsWith(".md") ? "" : ".md"));
+			return `[${label}](${href})`;
+		}
+		return `[[${stem}]]`;
 	}
 
 	static getViewOptions(): ViewOption[] {
