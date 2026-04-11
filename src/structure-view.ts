@@ -60,6 +60,8 @@ export class StructureView extends BasesView {
 	private dragState: DragState | null = null;
 	/** Row that started the current drag (for dragend cleanup if target is not the row). */
 	private dragSourceRowEl: HTMLElement | null = null;
+	private lastDragPointerClientY = 0;
+	private dragAutoScrollRafId: number | undefined;
 	/** Row currently shown as drop target; avoids querySelectorAll on every dragover. */
 	private dropHighlightRowEl: HTMLElement | null = null;
 	private relationProperty = DEFAULT_RELATION_PROPERTY;
@@ -68,6 +70,8 @@ export class StructureView extends BasesView {
 	private filterQuery = "";
 	private searchDebounceHandle: number | undefined;
 	private toolbarEl: HTMLElement | null = null;
+	/** Vertical scroll host for the tree (`.bases-structure-tree-scroll`). */
+	private treeScrollEl: HTMLElement | null = null;
 	private treeMountEl: HTMLElement | null = null;
 	private searchWrapEl: HTMLElement | null = null;
 	private searchInputEl: HTMLInputElement | null = null;
@@ -162,6 +166,7 @@ export class StructureView extends BasesView {
 	/** One listener set for the whole tree; avoids per-row addEventListener on every render. */
 	private registerDelegatedTreeDragDrop(): void {
 		this.plugin.registerDomEvent(this.containerEl, "dragstart", (evt: DragEvent) => {
+			this.stopDragAutoScroll();
 			const row = (evt.target as HTMLElement).closest(
 				".bases-structure-row",
 			) as HTMLElement | null;
@@ -206,6 +211,7 @@ export class StructureView extends BasesView {
 			const row =
 				(evt.target as HTMLElement).closest(".bases-structure-row") ??
 				this.dragSourceRowEl;
+			this.stopDragAutoScroll();
 			this.dragState = null;
 			this.isCtrlPressed = false;
 			this.clearDropHighlights();
@@ -215,19 +221,32 @@ export class StructureView extends BasesView {
 
 		this.plugin.registerDomEvent(this.containerEl, "dragover", (evt: DragEvent) => {
 			if (!this.dragState) return;
+			this.isCtrlPressed = evt.ctrlKey;
+			this.lastDragPointerClientY = evt.clientY;
+			if (this.wouldDragScrollChangeScrollTop()) {
+				this.ensureDragAutoScrollLoop();
+			}
+
 			const row = (evt.target as HTMLElement).closest(
 				".bases-structure-row",
 			) as HTMLElement | null;
-			if (!row) return;
-			evt.preventDefault();
-			this.isCtrlPressed = evt.ctrlKey;
-			if (evt.dataTransfer) {
-				evt.dataTransfer.dropEffect = this.isCtrlPressed ? "copy" : "move";
-			}
-			if (this.dropHighlightRowEl !== row) {
-				this.dropHighlightRowEl?.removeClass("is-drop-target");
-				this.dropHighlightRowEl = row;
-				row.addClass("is-drop-target");
+			const overTreeScroll =
+				this.treeScrollEl?.contains(evt.target as Node) ?? false;
+			if (row) {
+				evt.preventDefault();
+				if (evt.dataTransfer) {
+					evt.dataTransfer.dropEffect = this.isCtrlPressed ? "copy" : "move";
+				}
+				if (this.dropHighlightRowEl !== row) {
+					this.dropHighlightRowEl?.removeClass("is-drop-target");
+					this.dropHighlightRowEl = row;
+					row.addClass("is-drop-target");
+				}
+			} else if (overTreeScroll) {
+				evt.preventDefault();
+				if (evt.dataTransfer) {
+					evt.dataTransfer.dropEffect = this.isCtrlPressed ? "copy" : "move";
+				}
 			}
 		});
 
@@ -259,9 +278,65 @@ export class StructureView extends BasesView {
 		});
 	}
 
+	/** Pixels to add to `scrollTop` this frame (negative = up), or 0 if pointer outside edge bands. */
+	private computeDragScrollStepPx(): number {
+		const el = this.treeScrollEl;
+		if (!el || !this.dragState) return 0;
+		const rect = el.getBoundingClientRect();
+		const zone = 48;
+		const y = this.lastDragPointerClientY;
+		if (y < rect.top + zone) {
+			const k = Math.min(1, (rect.top + zone - y) / zone);
+			return -Math.max(2, Math.round(2 + k * 14));
+		}
+		if (y > rect.bottom - zone) {
+			const k = Math.min(1, (y - (rect.bottom - zone)) / zone);
+			return Math.max(2, Math.round(2 + k * 14));
+		}
+		return 0;
+	}
+
+	private wouldDragScrollChangeScrollTop(): boolean {
+		const el = this.treeScrollEl;
+		if (!el || !this.dragState) return false;
+		const delta = this.computeDragScrollStepPx();
+		if (delta === 0) return false;
+		const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+		const next = Math.max(0, Math.min(maxScroll, el.scrollTop + delta));
+		return next !== el.scrollTop;
+	}
+
+	private ensureDragAutoScrollLoop(): void {
+		if (this.dragAutoScrollRafId != null) return;
+		if (!this.wouldDragScrollChangeScrollTop()) return;
+		const step = (): void => {
+			this.dragAutoScrollRafId = undefined;
+			if (!this.dragState || !this.treeScrollEl) return;
+			const el = this.treeScrollEl;
+			const delta = this.computeDragScrollStepPx();
+			if (delta === 0) return;
+			const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+			const prevTop = el.scrollTop;
+			el.scrollTop = Math.max(0, Math.min(maxScroll, el.scrollTop + delta));
+			if (el.scrollTop === prevTop) return;
+			if (this.dragState && this.wouldDragScrollChangeScrollTop()) {
+				this.dragAutoScrollRafId = window.requestAnimationFrame(step);
+			}
+		};
+		this.dragAutoScrollRafId = window.requestAnimationFrame(step);
+	}
+
+	private stopDragAutoScroll(): void {
+		if (this.dragAutoScrollRafId != null) {
+			window.cancelAnimationFrame(this.dragAutoScrollRafId);
+			this.dragAutoScrollRafId = undefined;
+		}
+	}
+
 	onunload(): void {
 		window.clearTimeout(this.searchDebounceHandle);
 		window.clearTimeout(this.dataUpdateDebounceHandle);
+		this.stopDragAutoScroll();
 	}
 
 	public focus(): void {
@@ -488,6 +563,7 @@ export class StructureView extends BasesView {
 		});
 
 		const treeScroll = this.containerEl.createDiv({ cls: "bases-structure-tree-scroll" });
+		this.treeScrollEl = treeScroll;
 		this.treeMountEl = treeScroll.createDiv({ cls: "bases-structure-tree" });
 	}
 
@@ -987,6 +1063,7 @@ export class StructureView extends BasesView {
 		targetBranchKey: string,
 		isCopyMode: boolean,
 	): Promise<void> {
+		this.stopDragAutoScroll();
 		const drag = this.dragState;
 		this.dragState = null;
 		this.isCtrlPressed = false;
