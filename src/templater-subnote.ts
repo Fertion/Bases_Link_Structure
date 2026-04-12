@@ -1,4 +1,5 @@
 import { App, normalizePath, TFile, Vault, Workspace } from "obsidian";
+import { type PluginLocale, t } from "./i18n";
 
 /** Bridge to Templater; plugin id is `templater-obsidian`. */
 export interface TemplaterPluginBridge {
@@ -49,6 +50,7 @@ export async function applyExplicitTemplaterTemplate(
 	app: App,
 	templatePath: string,
 	targetFile: TFile,
+	locale: PluginLocale,
 ): Promise<ApplyTemplateResult> {
 	const trimmed = templatePath.trim();
 	if (!trimmed) {
@@ -59,7 +61,7 @@ export async function applyExplicitTemplaterTemplate(
 	if (!tp?.templater?.write_template_to_file) {
 		return {
 			ok: false,
-			reason: "Templater is not installed or does not expose write_template_to_file.",
+			reason: t(locale, "tplNotInstalled"),
 		};
 	}
 
@@ -70,14 +72,20 @@ export async function applyExplicitTemplaterTemplate(
 		file = app.vault.getAbstractFileByPath(withMd);
 	}
 	if (!(file instanceof TFile)) {
-		return { ok: false, reason: `Template file not found: ${trimmed}` };
+		return {
+			ok: false,
+			reason: t(locale, "tplTemplateNotFound", { path: trimmed }),
+		};
 	}
 
 	try {
 		await tp.templater.write_template_to_file(file, targetFile);
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
-		return { ok: false, reason: `Templater: ${msg}` };
+		return {
+			ok: false,
+			reason: t(locale, "tplTemplaterFailed", { msg }),
+		};
 	}
 
 	await delay(80);

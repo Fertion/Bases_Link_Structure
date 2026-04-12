@@ -1,4 +1,5 @@
 import { App, PluginSettingTab } from "obsidian";
+import { getPluginLocale, t } from "./i18n";
 import BasesStructurePlugin from "./main";
 
 /** Reserved for future plugin-level settings (none yet). */
@@ -20,7 +21,7 @@ export class BasesStructureSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		containerEl.createEl("p", {
-			text: "This plugin currently uses per-view settings in the bases view.",
+			text: t(getPluginLocale(), "settingsDescription"),
 			cls: "setting-item-description",
 		});
 	}

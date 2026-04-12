@@ -1,4 +1,5 @@
 import { App, ButtonComponent, Modal, Notice, TFile, normalizePath } from "obsidian";
+import { getPluginLocale, t } from "./i18n";
 
 export class RenameNoteModal extends Modal {
 	constructor(
@@ -10,8 +11,9 @@ export class RenameNoteModal extends Modal {
 
 	onOpen(): void {
 		const { contentEl } = this;
+		const loc = getPluginLocale();
 		contentEl.empty();
-		this.setTitle("Переименовать");
+		this.setTitle(t(loc, "renameTitle"));
 
 		const stem = this.file.basename.replace(/\.md$/i, "");
 		const input = contentEl.createEl("input", {
@@ -22,9 +24,9 @@ export class RenameNoteModal extends Modal {
 		});
 
 		const btnRow = contentEl.createDiv({ cls: "rename-note-modal-buttons" });
-		new ButtonComponent(btnRow).setButtonText("Отмена").onClick(() => this.close());
+		new ButtonComponent(btnRow).setButtonText(t(loc, "renameCancel")).onClick(() => this.close());
 		new ButtonComponent(btnRow)
-			.setButtonText("Переименовать")
+			.setButtonText(t(loc, "renameSubmit"))
 			.setCta()
 			.onClick(() => {
 				void this.submit(input.value);
@@ -44,9 +46,10 @@ export class RenameNoteModal extends Modal {
 	}
 
 	private async submit(raw: string): Promise<void> {
+		const loc = getPluginLocale();
 		const name = raw.trim();
 		if (!name) {
-			new Notice("Введите имя файла.");
+			new Notice(t(loc, "renameEmptyName"));
 			return;
 		}
 		const base = /\.md$/i.test(name) ? name : `${name}.md`;
@@ -57,7 +60,7 @@ export class RenameNoteModal extends Modal {
 			return;
 		}
 		if (this.app.vault.getAbstractFileByPath(newPath)) {
-			new Notice("Файл с таким именем уже существует.");
+			new Notice(t(loc, "renameFileExists"));
 			return;
 		}
 		try {

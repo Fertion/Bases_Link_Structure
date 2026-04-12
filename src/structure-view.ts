@@ -14,6 +14,7 @@ import {
 	Menu,
 	setIcon,
 } from "obsidian";
+import { getPluginLocale, t, type PluginLocale } from "./i18n";
 import type BasesStructurePlugin from "./main";
 import { openRenameNoteModal } from "./rename-note-modal";
 import {
@@ -83,6 +84,9 @@ export class StructureView extends BasesView {
 	private searchWrapEl: HTMLElement | null = null;
 	private searchInputEl: HTMLInputElement | null = null;
 	private searchClearBtn: HTMLButtonElement | null = null;
+	private toolbarExpandBtn: HTMLButtonElement | null = null;
+	private toolbarCollapseBtn: HTMLButtonElement | null = null;
+	private toolbarRevealBtn: HTMLButtonElement | null = null;
 	/** Latest tree from last render; used by toolbar actions wired once. */
 	private lastBuiltTree: TreeNode[] = [];
 	/** Visible rows in tree order (for Shift+range selection). */
@@ -178,9 +182,10 @@ export class StructureView extends BasesView {
 			const menu = new Menu();
 			this.app.workspace.trigger("file-menu", menu, file, FILE_MENU_SOURCE);
 			menu.addSeparator();
+			const loc = getPluginLocale();
 			menu.addItem((item) =>
 				item
-					.setTitle("Переименовать")
+					.setTitle(t(loc, "menuRename"))
 					.setIcon("pencil")
 					.onClick(() => {
 						openRenameNoteModal(this.app, file);
@@ -188,7 +193,7 @@ export class StructureView extends BasesView {
 			);
 			menu.addItem((item) =>
 				item
-					.setTitle("Удалить файл")
+					.setTitle(t(loc, "menuDeleteFile"))
 					.setIcon("trash")
 					.setWarning(true)
 					.onClick(() => {
@@ -199,7 +204,7 @@ export class StructureView extends BasesView {
 			const parentBranchKey = row.getAttr("data-branch-key") ?? "";
 			menu.addItem((item) =>
 				item
-					.setTitle("Создать подзаметку")
+					.setTitle(t(loc, "menuCreateSubNote"))
 					.setIcon("file-plus")
 					.onClick(() => {
 						void this.createSubNoteUnder(file, parentBranchKey);
@@ -436,6 +441,8 @@ export class StructureView extends BasesView {
 	private render(): void {
 		this.relationProperty = this.getRelationPropertyFromConfig();
 		this.ensureToolbarShell();
+		const loc = getPluginLocale();
+		this.refreshToolbarI18n(loc);
 		this.filterQuery = this.searchInputEl?.value ?? "";
 
 		const treeMount = this.treeMountEl;
@@ -448,7 +455,7 @@ export class StructureView extends BasesView {
 		if (entries.length === 0) {
 			this.lastBuiltTree = [];
 			treeMount.createEl("p", {
-				text: "No entries found.",
+				text: t(loc, "emptyNoEntries"),
 				cls: "bases-structure-empty",
 			});
 			return;
@@ -459,7 +466,7 @@ export class StructureView extends BasesView {
 
 		if (tree.length === 0) {
 			treeMount.createEl("p", {
-				text: "No roots found. Check for cyclic relations.",
+				text: t(loc, "emptyNoRoots"),
 				cls: "bases-structure-empty",
 			});
 			return;
@@ -472,7 +479,7 @@ export class StructureView extends BasesView {
 			const anyVisible = tree.some((root) => this.shouldShowNodeInFilter(root, false));
 			if (!anyVisible) {
 				treeMount.createEl("p", {
-					text: `No notes match "${q}".`,
+					text: t(loc, "emptyNoMatch", { q }),
 					cls: "bases-structure-empty",
 				});
 				return;
@@ -482,7 +489,7 @@ export class StructureView extends BasesView {
 		const activePath = this.app.workspace.getActiveFile()?.path ?? "";
 		this.visibleRowOrder = [];
 		for (const root of tree) {
-			this.renderNode(treeMount, root, true, false, activePath);
+			this.renderNode(treeMount, root, true, false, activePath, loc);
 		}
 		this.lastPaintedActiveFilePath = activePath;
 		this.ensureTreeLayoutObserver();
@@ -572,16 +579,16 @@ export class StructureView extends BasesView {
 
 		const expandBtn = toolbarLeft.createEl("button", {
 			cls: "bases-structure-toolbar-btn",
-			text: "Expand all",
-			attr: { type: "button", "aria-label": "Expand all branches" },
+			attr: { type: "button" },
 		});
+		this.toolbarExpandBtn = expandBtn;
 		setIcon(expandBtn, "unfold-vertical");
 
 		const collapseBtn = toolbarLeft.createEl("button", {
 			cls: "bases-structure-toolbar-btn",
-			text: "Collapse all",
-			attr: { type: "button", "aria-label": "Collapse all branches" },
+			attr: { type: "button" },
 		});
+		this.toolbarCollapseBtn = collapseBtn;
 		setIcon(collapseBtn, "fold-vertical");
 
 		expandBtn.addEventListener("click", (evt) => {
@@ -598,13 +605,9 @@ export class StructureView extends BasesView {
 
 		const revealActiveBtn = toolbarLeft.createEl("button", {
 			cls: "bases-structure-toolbar-btn",
-			text: "Show active file",
-			attr: {
-				type: "button",
-				"aria-label":
-					"Expand path to active note, scroll to it; repeat to cycle duplicate rows",
-			},
+			attr: { type: "button" },
 		});
+		this.toolbarRevealBtn = revealActiveBtn;
 		setIcon(revealActiveBtn, "scan-search");
 		revealActiveBtn.addEventListener("click", (evt) => {
 			evt.preventDefault();
@@ -618,8 +621,6 @@ export class StructureView extends BasesView {
 			cls: "bases-structure-search",
 			type: "search",
 			attr: {
-				placeholder: "Filter tree…",
-				"aria-label": "Filter tree by name",
 				spellcheck: "false",
 			},
 		});
@@ -627,7 +628,7 @@ export class StructureView extends BasesView {
 
 		const clearBtn = searchWrap.createEl("button", {
 			cls: "bases-structure-search-clear clickable-icon",
-			attr: { type: "button", "aria-label": "Clear filter" },
+			attr: { type: "button" },
 		});
 		this.searchClearBtn = clearBtn;
 		setIcon(clearBtn, "x");
@@ -664,6 +665,33 @@ export class StructureView extends BasesView {
 		this.treeScrollEl = treeScroll;
 		this.treeMountEl = treeScroll.createDiv({ cls: "bases-structure-tree" });
 		this.ensureTreeLayoutObserver();
+	}
+
+	private refreshToolbarI18n(locale: PluginLocale): void {
+		const ex = this.toolbarExpandBtn;
+		if (ex) {
+			ex.setAttr("aria-label", t(locale, "expandAllAria"));
+			ex.removeAttribute("title");
+		}
+		const col = this.toolbarCollapseBtn;
+		if (col) {
+			col.setAttr("aria-label", t(locale, "collapseAllAria"));
+			col.removeAttribute("title");
+		}
+		const rev = this.toolbarRevealBtn;
+		if (rev) {
+			rev.setAttr("aria-label", t(locale, "showActiveFileAria"));
+			rev.removeAttribute("title");
+		}
+		const search = this.searchInputEl;
+		if (search) {
+			search.setAttr("placeholder", t(locale, "filterPlaceholder"));
+			search.setAttr("aria-label", t(locale, "filterAria"));
+		}
+		const clear = this.searchClearBtn;
+		if (clear) {
+			clear.setAttr("aria-label", t(locale, "clearFilterAria"));
+		}
 	}
 
 	/** Observe tree size so connector segments stay aligned after layout changes. */
@@ -770,13 +798,14 @@ export class StructureView extends BasesView {
 	}
 
 	private revealAndScrollToActiveFile(): void {
+		const loc = getPluginLocale();
 		const file = this.app.workspace.getActiveFile();
 		if (!file) {
-			new Notice("No active note.");
+			new Notice(t(loc, "noticeNoActiveNote"));
 			return;
 		}
 		if (this.lastBuiltTree.length === 0) {
-			new Notice("Nothing to show in this view.");
+			new Notice(t(loc, "noticeNothingToShow"));
 			return;
 		}
 		if (file.path !== this.lastActiveFilePathForRevealCycle) {
@@ -785,7 +814,7 @@ export class StructureView extends BasesView {
 		}
 		const chains = this.findAllChainsToFile(this.lastBuiltTree, file.path);
 		if (chains.length === 0) {
-			new Notice("Active note is not in this base.");
+			new Notice(t(loc, "noticeActiveNotInBase"));
 			return;
 		}
 		const n = chains.length;
@@ -807,9 +836,9 @@ export class StructureView extends BasesView {
 				scrollToBranchKey: targetBranchKey,
 			});
 			if (!hasMatch) {
-				new Notice("Active note is hidden by the current filter.");
+				new Notice(t(loc, "noticeActiveHiddenFilter"));
 			} else if (!branchScrolled) {
-				new Notice("This occurrence is hidden by the current filter.");
+				new Notice(t(loc, "noticeOccurrenceHiddenFilter"));
 			}
 		});
 	}
@@ -1119,6 +1148,7 @@ export class StructureView extends BasesView {
 		isLast: boolean,
 		underMatchedParent: boolean,
 		activePath: string,
+		locale: PluginLocale,
 	): void {
 		const filterActive = this.filterQuery.trim().length > 0;
 		if (filterActive && !this.shouldShowNodeInFilter(node, underMatchedParent)) {
@@ -1167,7 +1197,7 @@ export class StructureView extends BasesView {
 		if (hasChildren) {
 			const btn = toggleWrap.createEl("button", {
 				cls: "bases-structure-toggle clickable-icon",
-				attr: { "aria-label": "Expand or collapse branch" },
+				attr: { "aria-label": t(locale, "toggleBranchAria") },
 			});
 			setIcon(btn, expanded ? "minus" : "plus");
 			btn.addEventListener("click", (evt) => {
@@ -1212,7 +1242,7 @@ export class StructureView extends BasesView {
 			attr: {
 				role: "button",
 				tabindex: "0",
-				"aria-label": "Collapse branch",
+				"aria-label": t(locale, "spineCollapseAria"),
 				"data-branch-key": node.branchKey,
 			},
 		});
@@ -1223,6 +1253,7 @@ export class StructureView extends BasesView {
 				index === node.children.length - 1,
 				nextUnderMatched,
 				activePath,
+				locale,
 			);
 		});
 	}
@@ -1308,10 +1339,11 @@ export class StructureView extends BasesView {
 	}
 
 	private async createSubNoteUnder(parentFile: TFile, parentBranchKey: string): Promise<void> {
+		const loc = getPluginLocale();
 		this.relationProperty = this.getRelationPropertyFromConfig();
 		const folderPath = parentFile.parent?.path ?? "";
 		try {
-			const notePath = await this.getUniqueNotePath(folderPath, "Новая заметка");
+			const notePath = await this.getUniqueNotePath(folderPath, t(loc, "newNoteBaseName"));
 			const newFile = await this.app.vault.create(notePath, "");
 			await this.app.workspace.getLeaf(false).openFile(newFile);
 
@@ -1321,6 +1353,7 @@ export class StructureView extends BasesView {
 					this.app,
 					templatePath,
 					newFile,
+					loc,
 				);
 				if (!applied.ok) {
 					if (applied.reason.length > 0) {
@@ -1340,7 +1373,7 @@ export class StructureView extends BasesView {
 			this.render();
 		} catch (err) {
 			const detail = err instanceof Error ? err.message : String(err);
-			new Notice(`Could not create sub-note: ${detail}`, 8000);
+			new Notice(t(loc, "couldNotCreateSubNote", { detail }), 8000);
 		}
 	}
 
@@ -1356,6 +1389,7 @@ export class StructureView extends BasesView {
 		this.clearDropHighlights();
 		if (!drag) return;
 
+		const loc = getPluginLocale();
 		const ordered = this.sortSourcesDeepestFirst(drag.sources);
 		let moved = 0;
 		for (const item of ordered) {
@@ -1372,7 +1406,7 @@ export class StructureView extends BasesView {
 			const { childrenMap } = this.buildRelationMaps(entries);
 			if (this.wouldCreateCycle(item.filePath, targetFilePath, childrenMap)) {
 				if (ordered.length === 1) {
-					new Notice("This operation would create a cycle.");
+					new Notice(t(loc, "noticeCycle"));
 				}
 				continue;
 			}
@@ -1387,7 +1421,10 @@ export class StructureView extends BasesView {
 			} catch (err) {
 				const detail = err instanceof Error ? err.message : String(err);
 				new Notice(
-					`Could not save relation for "${sourceEntry.file.basename}": ${detail}`,
+					t(loc, "couldNotSaveRelation", {
+						name: sourceEntry.file.basename,
+						detail,
+					}),
 					8000,
 				);
 			}
@@ -1506,20 +1543,21 @@ export class StructureView extends BasesView {
 	}
 
 	static getViewOptions(app: App): ViewOption[] {
+		const loc = getPluginLocale();
 		return [
 			{
 				key: "relationProperty",
-				displayName: "Relation property",
+				displayName: t(loc, "viewOptionRelationProperty"),
 				type: "text",
 				default: DEFAULT_RELATION_PROPERTY,
-				placeholder: "up",
+				placeholder: t(loc, "viewOptionRelationPlaceholder"),
 			},
 			{
 				key: "subNoteTemplate",
-				displayName: "Sub-note template",
+				displayName: t(loc, "viewOptionSubNoteTemplate"),
 				type: "file",
 				default: "",
-				placeholder: "Template from Templater folder",
+				placeholder: t(loc, "viewOptionSubNotePlaceholder"),
 				filter: (file: TFile) => subNoteTemplateFileFilter(app, file),
 			},
 		];
