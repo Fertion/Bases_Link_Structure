@@ -104,15 +104,18 @@ const messages = {
 
 export type MessageKey = keyof typeof messages.en;
 
-export function getPluginLocale(): PluginLocale {
+/** Root `window.localStorage` key Obsidian uses for UI language (not vault-scoped `App#loadLocalStorage`). */
+function getObsidianLanguageCode(): string | null {
 	try {
-		if (typeof localStorage !== "undefined" && localStorage.getItem("language") === "ru") {
-			return "ru";
-		}
+		const storage = globalThis.window?.localStorage;
+		return storage?.getItem("language") ?? null;
 	} catch {
-		/* ignore (e.g. storage unavailable) */
+		return null;
 	}
-	return "en";
+}
+
+export function getPluginLocale(): PluginLocale {
+	return getObsidianLanguageCode() === "ru" ? "ru" : "en";
 }
 
 export function t(locale: PluginLocale, key: MessageKey, vars?: Record<string, string>): string {
