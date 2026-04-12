@@ -15,6 +15,7 @@ import {
 	setIcon,
 } from "obsidian";
 import type BasesStructurePlugin from "./main";
+import { openRenameNoteModal } from "./rename-note-modal";
 import {
 	applyExplicitTemplaterTemplate,
 	subNoteTemplateFileFilter,
@@ -176,6 +177,24 @@ export class StructureView extends BasesView {
 			evt.stopPropagation();
 			const menu = new Menu();
 			this.app.workspace.trigger("file-menu", menu, file, FILE_MENU_SOURCE);
+			menu.addSeparator();
+			menu.addItem((item) =>
+				item
+					.setTitle("Переименовать")
+					.setIcon("pencil")
+					.onClick(() => {
+						openRenameNoteModal(this.app, file);
+					}),
+			);
+			menu.addItem((item) =>
+				item
+					.setTitle("Удалить файл")
+					.setIcon("trash")
+					.setWarning(true)
+					.onClick(() => {
+						void this.app.fileManager.promptForDeletion(file);
+					}),
+			);
 			menu.addSeparator();
 			const parentBranchKey = row.getAttr("data-branch-key") ?? "";
 			menu.addItem((item) =>
