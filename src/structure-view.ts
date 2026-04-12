@@ -126,7 +126,7 @@ export class StructureView extends BasesView {
 
 		this.plugin.registerDomEvent(this.containerEl, "click", (evt: MouseEvent) => {
 			const target = evt.target as HTMLElement;
-			const spine = target.closest(".bases-structure-spine") as HTMLElement | null;
+			const spine = target.closest(".bases-structure-spine");
 			if (spine) {
 				evt.preventDefault();
 				evt.stopPropagation();
@@ -139,7 +139,7 @@ export class StructureView extends BasesView {
 			}
 			if (target.closest(".bases-structure-toggle")) return;
 
-			const row = target.closest(".bases-structure-row") as HTMLElement | null;
+			const row = target.closest(".bases-structure-row");
 			if (!row) return;
 
 			const branchKey = row.getAttr("data-branch-key");
@@ -167,7 +167,7 @@ export class StructureView extends BasesView {
 		this.plugin.registerDomEvent(this.containerEl, "contextmenu", (evt: MouseEvent) => {
 			const row = (evt.target as HTMLElement).closest(
 				".bases-structure-row",
-			) as HTMLElement | null;
+			);
 			if (!row) return;
 			const path = row.getAttr("data-file-path");
 			if (!path) return;
@@ -213,7 +213,7 @@ export class StructureView extends BasesView {
 			if (evt.key !== "Enter" && evt.key !== " ") return;
 			const spine = (evt.target as HTMLElement).closest(
 				".bases-structure-spine",
-			) as HTMLElement | null;
+			);
 			if (!spine) return;
 			evt.preventDefault();
 			const parentKey = spine.getAttr("data-branch-key");
@@ -230,10 +230,9 @@ export class StructureView extends BasesView {
 	private registerDelegatedTreeDragDrop(): void {
 		this.plugin.registerDomEvent(this.containerEl, "dragstart", (evt: DragEvent) => {
 			this.stopDragAutoScroll();
-			const row = (evt.target as HTMLElement).closest(
-				".bases-structure-row",
-			) as HTMLElement | null;
-			if (!row || !evt.dataTransfer) return;
+			const rowEl = (evt.target as HTMLElement).closest(".bases-structure-row");
+			if (!(rowEl instanceof HTMLElement) || !evt.dataTransfer) return;
+			const row = rowEl;
 
 			const branchKey = row.getAttr("data-branch-key");
 			const filePath = row.getAttr("data-file-path");
@@ -268,14 +267,16 @@ export class StructureView extends BasesView {
 		});
 
 		this.plugin.registerDomEvent(this.containerEl, "dragend", (evt: DragEvent) => {
-			const row =
+			const rowEl =
 				(evt.target as HTMLElement).closest(".bases-structure-row") ??
 				this.dragSourceRowEl;
 			this.stopDragAutoScroll();
 			this.dragState = null;
 			this.isCtrlPressed = false;
 			this.clearDropHighlights();
-			row?.removeClass("is-dragging");
+			if (rowEl instanceof HTMLElement) {
+				rowEl.removeClass("is-dragging");
+			}
 			this.dragSourceRowEl = null;
 		});
 
@@ -287,9 +288,8 @@ export class StructureView extends BasesView {
 				this.ensureDragAutoScrollLoop();
 			}
 
-			const row = (evt.target as HTMLElement).closest(
-				".bases-structure-row",
-			) as HTMLElement | null;
+			const rowEl = (evt.target as HTMLElement).closest(".bases-structure-row");
+			const row = rowEl instanceof HTMLElement ? rowEl : null;
 			const overTreeScroll =
 				this.treeScrollEl?.contains(evt.target as Node) ?? false;
 			if (row) {
@@ -312,10 +312,9 @@ export class StructureView extends BasesView {
 
 		this.plugin.registerDomEvent(this.containerEl, "dragleave", (evt: DragEvent) => {
 			if (!this.dragState) return;
-			const row = (evt.target as HTMLElement).closest(
-				".bases-structure-row",
-			) as HTMLElement | null;
-			if (!row) return;
+			const rowEl = (evt.target as HTMLElement).closest(".bases-structure-row");
+			if (!(rowEl instanceof HTMLElement)) return;
+			const row = rowEl;
 			const related = evt.relatedTarget as HTMLElement | null;
 			if (related && row.contains(related)) return;
 			row.removeClass("is-drop-target");
@@ -325,10 +324,9 @@ export class StructureView extends BasesView {
 		});
 
 		this.plugin.registerDomEvent(this.containerEl, "drop", (evt: DragEvent) => {
-			const row = (evt.target as HTMLElement).closest(
-				".bases-structure-row",
-			) as HTMLElement | null;
-			if (!row) return;
+			const rowEl = (evt.target as HTMLElement).closest(".bases-structure-row");
+			if (!(rowEl instanceof HTMLElement)) return;
+			const row = rowEl;
 			const filePath = row.getAttr("data-file-path");
 			const branchKey = row.getAttr("data-branch-key");
 			if (!filePath || !branchKey) return;
@@ -543,7 +541,7 @@ export class StructureView extends BasesView {
 	private queryRowElsByFilePath(filePath: string): HTMLElement[] {
 		const tm = this.treeMountEl;
 		if (!filePath || !tm) return [];
-		return Array.from(tm.querySelectorAll(this.activeRowSelectorForPath(filePath))) as HTMLElement[];
+		return Array.from(tm.querySelectorAll(this.activeRowSelectorForPath(filePath)));
 	}
 
 	/** Update row classes when the active file changed without a full `render()`. */
@@ -633,7 +631,6 @@ export class StructureView extends BasesView {
 		});
 		this.searchClearBtn = clearBtn;
 		setIcon(clearBtn, "x");
-		clearBtn.style.display = "none";
 
 		clearBtn.addEventListener("click", (evt) => {
 			evt.preventDefault();
@@ -702,45 +699,44 @@ export class StructureView extends BasesView {
 		const blocks = mount.querySelectorAll(".bases-structure-children");
 		for (let i = 0; i < blocks.length; i++) {
 			const block = blocks[i] as HTMLElement;
-			const spine = block.querySelector(":scope > .bases-structure-spine") as HTMLElement | null;
-			if (!spine) continue;
+			const spineEl = block.querySelector(":scope > .bases-structure-spine");
+			if (!(spineEl instanceof HTMLElement)) continue;
 
 			const parentItem = block.parentElement;
-			const parentRow =
+			const parentRowEl =
 				parentItem?.matches(".bases-structure-item") === true
-					? (parentItem.querySelector(":scope > .bases-structure-row") as HTMLElement | null)
+					? parentItem.querySelector(":scope > .bases-structure-row")
 					: null;
 			const childItems = block.querySelectorAll(":scope > .bases-structure-item");
-			if (!parentRow || childItems.length === 0) {
-				spine.style.top = "0px";
-				spine.style.height = "0px";
+			if (!(parentRowEl instanceof HTMLElement) || childItems.length === 0) {
+				spineEl.style.top = `${0}px`;
+				spineEl.style.height = `${0}px`;
 				continue;
 			}
 
 			const lastItem = childItems[childItems.length - 1] as HTMLElement;
-			const lastRow = lastItem.querySelector(":scope > .bases-structure-row") as HTMLElement | null;
-			if (!lastRow) {
-				spine.style.top = "0px";
-				spine.style.height = "0px";
+			const lastRowEl = lastItem.querySelector(":scope > .bases-structure-row");
+			if (!(lastRowEl instanceof HTMLElement)) {
+				spineEl.style.top = `${0}px`;
+				spineEl.style.height = `${0}px`;
 				continue;
 			}
 
 			const br = block.getBoundingClientRect();
-			const pr = parentRow.getBoundingClientRect();
-			const lr = lastRow.getBoundingClientRect();
+			const pr = parentRowEl.getBoundingClientRect();
+			const lr = lastRowEl.getBoundingClientRect();
 			const topPx = pr.top + pr.height / 2 - br.top;
 			const bottomPx = lr.top + lr.height / 2 - br.top;
 			const h = Math.max(0, bottomPx - topPx);
-			spine.style.top = `${topPx}px`;
-			spine.style.height = `${h}px`;
+			spineEl.style.top = `${topPx}px`;
+			spineEl.style.height = `${h}px`;
 		}
 	}
 
 	private updateSearchAdornments(): void {
-		if (!this.searchWrapEl || !this.searchClearBtn || !this.searchInputEl) return;
+		if (!this.searchWrapEl || !this.searchInputEl) return;
 		const has = this.searchInputEl.value.trim().length > 0;
 		this.searchWrapEl.toggleClass("has-value", has);
-		this.searchClearBtn.style.display = has ? "inline-flex" : "none";
 	}
 
 	private expandAllFromTree(nodes: TreeNode[]): void {
@@ -1009,7 +1005,13 @@ export class StructureView extends BasesView {
 
 		if (rawParents.length === 0) {
 			const cache = this.app.metadataCache.getFileCache(entry.file);
-			const rawFrontmatter = cache?.frontmatter?.[this.relationProperty];
+			const fm = cache?.frontmatter;
+			let rawFrontmatter: unknown;
+			if (fm && typeof fm === "object" && !Array.isArray(fm)) {
+				rawFrontmatter = (fm as Record<string, unknown>)[this.relationProperty];
+			} else {
+				rawFrontmatter = undefined;
+			}
 			rawParents.push(...this.extractPathsFromFrontmatter(rawFrontmatter, entry.file));
 		}
 
@@ -1088,7 +1090,7 @@ export class StructureView extends BasesView {
 		if (!source.includes("](")) return null;
 		const m = source.match(/\[([^\]]*)\]\(([^)]+)\)/);
 		if (!m?.[2]) return null;
-		return m[2]!.trim();
+		return m[2].trim();
 	}
 
 	/** Resolve a vault path or relative `.md` href from a markdown link to canonical file path. */
@@ -1196,7 +1198,7 @@ export class StructureView extends BasesView {
 			void this.app.workspace.openLinkText(node.filePath, "", evt.ctrlKey || evt.metaKey);
 		});
 
-		const counterEl = rowEl.createDiv({
+		rowEl.createDiv({
 			cls: "bases-structure-counter",
 			text: `${node.descendantCount}`,
 		});
@@ -1331,8 +1333,8 @@ export class StructureView extends BasesView {
 			}
 
 			const parentLink = this.formatRelationLinkToParent(parentFile.path, newFile);
-			await this.app.fileManager.processFrontMatter(newFile, (frontmatter) => {
-				frontmatter[this.relationProperty] = [parentLink];
+			await this.app.fileManager.processFrontMatter(newFile, (fm: Record<string, unknown>) => {
+				fm[this.relationProperty] = [parentLink];
 			});
 			this.expandAncestorsByBranchKey(parentBranchKey);
 			this.render();
@@ -1428,8 +1430,8 @@ export class StructureView extends BasesView {
 		const property = this.relationProperty;
 		const newParentLink = this.formatRelationLinkToParent(newParentPath, file);
 
-		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-			const current = frontmatter[property];
+		await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+			const current = fm[property];
 			const rawLinks = this.normalizeFrontmatterLinks(current);
 			const relationItems = rawLinks.map((raw) => ({
 				raw,
@@ -1455,9 +1457,9 @@ export class StructureView extends BasesView {
 
 			const links = relationItems.map((item) => item.raw);
 			if (links.length === 0) {
-				delete frontmatter[property];
+				delete fm[property];
 			} else {
-				frontmatter[property] = links;
+				fm[property] = links;
 			}
 		});
 	}

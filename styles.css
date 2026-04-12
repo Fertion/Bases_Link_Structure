@@ -56,6 +56,10 @@
 	padding-right: 30px;
 }
 
+.bases-structure-search-wrap.has-value .bases-structure-search-clear {
+	display: inline-flex;
+}
+
 .bases-structure-search {
 	width: 100%;
 	height: var(--input-height);
@@ -74,7 +78,7 @@
 	width: 22px;
 	height: 22px;
 	padding: 0;
-	display: inline-flex;
+	display: none;
 	align-items: center;
 	justify-content: center;
 	border-radius: var(--clickable-icon-radius);

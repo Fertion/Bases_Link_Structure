@@ -1,14 +1,12 @@
 import { App, PluginSettingTab } from "obsidian";
 import BasesStructurePlugin from "./main";
 
-export interface MyPluginSettings {
-	// Reserved for future plugin-level settings.
-}
+/** Reserved for future plugin-level settings (none yet). */
+export type BasesStructurePluginSettings = Record<string, never>;
 
-export const DEFAULT_SETTINGS: MyPluginSettings = {
-};
+export const DEFAULT_SETTINGS: BasesStructurePluginSettings = {};
 
-export class SampleSettingTab extends PluginSettingTab {
+export class BasesStructureSettingTab extends PluginSettingTab {
 	plugin: BasesStructurePlugin;
 
 	constructor(app: App, plugin: BasesStructurePlugin) {
@@ -22,7 +20,7 @@ export class SampleSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		containerEl.createEl("p", {
-			text: "This plugin currently uses per-view settings in Bases options.",
+			text: "This plugin currently uses per-view settings in the bases view.",
 			cls: "setting-item-description",
 		});
 	}
