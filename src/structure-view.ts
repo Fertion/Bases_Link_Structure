@@ -1,4 +1,5 @@
 import {
+	App,
 	BasesEntry,
 	BasesPropertyId,
 	BasesView,
@@ -14,6 +15,11 @@ import {
 	setIcon,
 } from "obsidian";
 import type BasesStructurePlugin from "./main";
+import {
+	applyExplicitTemplaterTemplate,
+	subNoteTemplateFileFilter,
+	waitForAutomaticTemplaterOnFile,
+} from "./templater-subnote";
 
 type ParentPath = string | null;
 
@@ -170,6 +176,16 @@ export class StructureView extends BasesView {
 			evt.stopPropagation();
 			const menu = new Menu();
 			this.app.workspace.trigger("file-menu", menu, file, FILE_MENU_SOURCE);
+			menu.addSeparator();
+			const parentBranchKey = row.getAttr("data-branch-key") ?? "";
+			menu.addItem((item) =>
+				item
+					.setTitle("Создать подзаметку")
+					.setIcon("file-plus")
+					.onClick(() => {
+						void this.createSubNoteUnder(file, parentBranchKey);
+					}),
+			);
 			this.addChild(menu);
 			menu.showAtMouseEvent(evt);
 		});
@@ -832,6 +848,12 @@ export class StructureView extends BasesView {
 		return DEFAULT_RELATION_PROPERTY;
 	}
 
+	/** Vault path to a Templater template `.md` for “Create sub-note”; empty = rely on Templater’s new-file rules only. */
+	private getSubNoteTemplatePathFromConfig(): string {
+		const raw = this.config?.get("subNoteTemplate");
+		return typeof raw === "string" ? raw.trim() : "";
+	}
+
 	private getRelationPropertyId(): BasesPropertyId {
 		return `note.${this.relationProperty}` as BasesPropertyId;
 	}
@@ -1236,6 +1258,71 @@ export class StructureView extends BasesView {
 		this.dropHighlightRowEl = null;
 	}
 
+	/**
+	 * Ensures the row for {@link branchKey} and every ancestor row is expanded.
+	 * Keys follow {@link buildTree}: `rootPath`, then `rootPath>childPath`, etc.
+	 */
+	private expandAncestorsByBranchKey(branchKey: string): void {
+		if (!branchKey) return;
+		const parts = branchKey.split(">");
+		let prefix = "";
+		for (let i = 0; i < parts.length; i++) {
+			const segment = parts[i];
+			if (segment === undefined || segment.length === 0) continue;
+			prefix = i === 0 ? segment : `${prefix}>${segment}`;
+			this.expandedBranchKeys.add(prefix);
+		}
+	}
+
+	private async getUniqueNotePath(folderPath: string, baseName: string): Promise<string> {
+		const prefix =
+			folderPath === "" || folderPath === "/" ? "" : folderPath.replace(/\/$/, "") + "/";
+		let path = `${prefix}${baseName}.md`;
+		let i = 1;
+		while (this.app.vault.getAbstractFileByPath(path)) {
+			path = `${prefix}${baseName} ${i}.md`;
+			i++;
+		}
+		return path;
+	}
+
+	private async createSubNoteUnder(parentFile: TFile, parentBranchKey: string): Promise<void> {
+		this.relationProperty = this.getRelationPropertyFromConfig();
+		const folderPath = parentFile.parent?.path ?? "";
+		try {
+			const notePath = await this.getUniqueNotePath(folderPath, "Новая заметка");
+			const newFile = await this.app.vault.create(notePath, "");
+			await this.app.workspace.getLeaf(false).openFile(newFile);
+
+			const templatePath = this.getSubNoteTemplatePathFromConfig();
+			if (templatePath.length > 0) {
+				const applied = await applyExplicitTemplaterTemplate(
+					this.app,
+					templatePath,
+					newFile,
+				);
+				if (!applied.ok) {
+					if (applied.reason.length > 0) {
+						new Notice(applied.reason, 8000);
+					}
+					await waitForAutomaticTemplaterOnFile(this.app, newFile);
+				}
+			} else {
+				await waitForAutomaticTemplaterOnFile(this.app, newFile);
+			}
+
+			const parentLink = this.formatRelationLinkToParent(parentFile.path, newFile);
+			await this.app.fileManager.processFrontMatter(newFile, (frontmatter) => {
+				frontmatter[this.relationProperty] = [parentLink];
+			});
+			this.expandAncestorsByBranchKey(parentBranchKey);
+			this.render();
+		} catch (err) {
+			const detail = err instanceof Error ? err.message : String(err);
+			new Notice(`Could not create sub-note: ${detail}`, 8000);
+		}
+	}
+
 	private async handleDropOnFile(
 		targetFilePath: string,
 		targetBranchKey: string,
@@ -1397,7 +1484,7 @@ export class StructureView extends BasesView {
 		return `[[${stem}]]`;
 	}
 
-	static getViewOptions(): ViewOption[] {
+	static getViewOptions(app: App): ViewOption[] {
 		return [
 			{
 				key: "relationProperty",
@@ -1405,6 +1492,14 @@ export class StructureView extends BasesView {
 				type: "text",
 				default: DEFAULT_RELATION_PROPERTY,
 				placeholder: "up",
+			},
+			{
+				key: "subNoteTemplate",
+				displayName: "Sub-note template",
+				type: "file",
+				default: "",
+				placeholder: "Template from Templater folder",
+				filter: (file: TFile) => subNoteTemplateFileFilter(app, file),
 			},
 		];
 	}

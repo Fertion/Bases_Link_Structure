@@ -8,7 +8,7 @@ export default class BasesStructurePlugin extends Plugin {
 			icon: "lucide-git-branch",
 			factory: (controller, containerEl) =>
 				new StructureView(controller, containerEl, this),
-			options: () => StructureView.getViewOptions(),
+			options: () => StructureView.getViewOptions(this.app),
 		});
 	}
 }
