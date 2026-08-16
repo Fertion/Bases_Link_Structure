@@ -1,6 +1,6 @@
 {
-	"id": "bases_link_structure",
-	"name": "Bases Link Structure",
+	"id": "link_structure",
+	"name": "Link Structure",
 	"version": "1.0.2",
 	"minAppVersion": "1.10.2",
 	"description": "Adds a Structure view for Bases that displays entries in a hierarchical tree based on the 'up' property.",
