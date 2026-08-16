@@ -24,8 +24,8 @@ const messages = {
 		showActiveFile: "Show active file",
 		showActiveFileAria:
 			"Expand path to active note, scroll to it; repeat to cycle duplicate rows",
-		filterPlaceholder: "Filter tree…",
-		filterAria: "Filter tree by name",
+		filterPlaceholder: "Filter by properties…",
+		filterAria: "Filter tree by visible property values",
 		clearFilterAria: "Clear filter",
 		noticeNoActiveNote: "No active note.",
 		noticeNothingToShow: "Nothing to show in this view.",
@@ -71,8 +71,8 @@ const messages = {
 		showActiveFile: "Показать активный файл",
 		showActiveFileAria:
 			"Развернуть путь к активной заметке и прокрутить к ней; повтор — следующий дубликат строки",
-		filterPlaceholder: "Фильтр дерева…",
-		filterAria: "Фильтр дерева по имени",
+		filterPlaceholder: "Фильтр по свойствам…",
+		filterAria: "Фильтр дерева по значениям видимых свойств",
 		clearFilterAria: "Сбросить фильтр",
 		noticeNoActiveNote: "Нет активной заметки.",
 		noticeNothingToShow: "В этом виде нечего показать.",

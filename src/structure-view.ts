@@ -22,6 +22,17 @@ import {
 	subNoteTemplateFileFilter,
 	waitForAutomaticTemplaterOnFile,
 } from "./templater-subnote";
+import {
+	formatEntryFilterText,
+	formatTreeLabel,
+	parseBasesPropertyKey,
+	renderPropertyCell,
+	resolveColumnWidth,
+	splitVisibleProperties,
+	type CellController,
+	type StructureColumnModel,
+} from "./structure-cells";
+import { getPropertyTypeIcon } from "./native-property-widget";
 
 type ParentPath = string | null;
 
@@ -78,9 +89,37 @@ export class StructureView extends BasesView {
 	private filterQuery = "";
 	private searchDebounceHandle: number | undefined;
 	private toolbarEl: HTMLElement | null = null;
-	/** Vertical scroll host for the tree (`.bases-structure-tree-scroll`). */
+	/** Scroll host for header + tree (`.bases-structure-tree-scroll`). */
 	private treeScrollEl: HTMLElement | null = null;
+	/** Sticky column header row above the tree. */
+	private headerEl: HTMLElement | null = null;
 	private treeMountEl: HTMLElement | null = null;
+	/** Latest Bases column split (tree first, rest as table). */
+	private columnModel: StructureColumnModel = {
+		treePropertyId: null,
+		tablePropertyIds: [],
+		order: [],
+	};
+	/** Pixel widths from Bases `columnSize` (and live resize). */
+	private columnWidths = new Map<BasesPropertyId, number>();
+	/**
+	 * Local column order override. Bases `config.set("order")` does not reliably update
+	 * {@link BasesViewConfig.getOrder}, so drag-reorder is applied here and merged with Bases.
+	 */
+	private columnOrderOverride: BasesPropertyId[] | null = null;
+	private lastBasesOrderKey = "";
+	private ignoreNextBasesOrderChange = false;
+	/** Active property cell controllers (destroyed on each full render). */
+	private cellControllers: CellController[] = [];
+	/** Focused editable cells — suppresses full re-render from our own writes. */
+	private focusedCellCount = 0;
+	private pendingRenderWhileFocused = false;
+	private columnResizeState: {
+		propertyId: BasesPropertyId;
+		startX: number;
+		startWidth: number;
+	} | null = null;
+	private headerDragPropertyId: BasesPropertyId | null = null;
 	private searchWrapEl: HTMLElement | null = null;
 	private searchInputEl: HTMLInputElement | null = null;
 	private searchClearBtn: HTMLButtonElement | null = null;
@@ -142,6 +181,8 @@ export class StructureView extends BasesView {
 				return;
 			}
 			if (target.closest(".bases-structure-toggle")) return;
+			if (target.closest(".bases-structure-cell")) return;
+			if (target.closest(".bases-structure-header")) return;
 
 			const row = target.closest(".bases-structure-row");
 			if (!row) return;
@@ -235,7 +276,15 @@ export class StructureView extends BasesView {
 	private registerDelegatedTreeDragDrop(): void {
 		this.plugin.registerDomEvent(this.containerEl, "dragstart", (evt: DragEvent) => {
 			this.stopDragAutoScroll();
-			const rowEl = (evt.target as HTMLElement).closest(".bases-structure-row");
+			const target = evt.target as HTMLElement;
+			if (target.closest(".bases-structure-header")) {
+				return;
+			}
+			if (target.closest(".bases-structure-cell")) {
+				evt.preventDefault();
+				return;
+			}
+			const rowEl = target.closest(".bases-structure-row");
 			if (!(rowEl instanceof HTMLElement) || !evt.dataTransfer) return;
 			const row = rowEl;
 
@@ -286,6 +335,9 @@ export class StructureView extends BasesView {
 		});
 
 		this.plugin.registerDomEvent(this.containerEl, "dragover", (evt: DragEvent) => {
+			if ((evt.target as HTMLElement).closest(".bases-structure-header")) {
+				return;
+			}
 			if (!this.dragState) return;
 			this.isCtrlPressed = evt.ctrlKey;
 			this.lastDragPointerClientY = evt.clientY;
@@ -329,6 +381,9 @@ export class StructureView extends BasesView {
 		});
 
 		this.plugin.registerDomEvent(this.containerEl, "drop", (evt: DragEvent) => {
+			if ((evt.target as HTMLElement).closest(".bases-structure-header")) {
+				return;
+			}
 			const rowEl = (evt.target as HTMLElement).closest(".bases-structure-row");
 			if (!(rowEl instanceof HTMLElement)) return;
 			const row = rowEl;
@@ -418,6 +473,7 @@ export class StructureView extends BasesView {
 		window.clearTimeout(this.searchDebounceHandle);
 		window.clearTimeout(this.dataUpdateDebounceHandle);
 		this.stopDragAutoScroll();
+		this.destroyCellControllers();
 		if (this.treeConnectorLayoutRaf != null) {
 			window.cancelAnimationFrame(this.treeConnectorLayoutRaf);
 			this.treeConnectorLayoutRaf = undefined;
@@ -431,11 +487,84 @@ export class StructureView extends BasesView {
 	}
 
 	public onDataUpdated(): void {
+		if (this.focusedCellCount > 0 || this.columnResizeState) {
+			this.pendingRenderWhileFocused = true;
+			return;
+		}
 		window.clearTimeout(this.dataUpdateDebounceHandle);
 		this.dataUpdateDebounceHandle = window.setTimeout(() => {
 			this.dataUpdateDebounceHandle = undefined;
 			this.render();
 		}, 100);
+	}
+
+	private destroyCellControllers(): void {
+		for (const c of this.cellControllers) {
+			c.destroy({ silent: true });
+		}
+		this.cellControllers = [];
+		this.focusedCellCount = 0;
+	}
+
+	private onCellFocusChange(focused: boolean): void {
+		if (focused) {
+			this.focusedCellCount++;
+			return;
+		}
+		this.focusedCellCount = Math.max(0, this.focusedCellCount - 1);
+		if (this.focusedCellCount === 0 && this.pendingRenderWhileFocused) {
+			// Defer so focus moving cell→cell does not remount mid-click.
+			window.setTimeout(() => {
+				if (this.focusedCellCount === 0 && this.pendingRenderWhileFocused) {
+					this.pendingRenderWhileFocused = false;
+					this.render();
+				}
+			}, 0);
+		}
+	}
+
+	private onBeforeCellWrite(): void {
+		// Keep focus while Bases refreshes from our write.
+		this.pendingRenderWhileFocused = true;
+	}
+
+	private getColumnSizeMap(): Record<string, number> {
+		const raw = this.config?.get("columnSize");
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+			return {};
+		}
+		const out: Record<string, number> = {};
+		for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+			if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+				out[key] = value;
+			}
+		}
+		return out;
+	}
+
+	private persistColumnSize(propertyId: BasesPropertyId, width: number): void {
+		const sizes = this.getColumnSizeMap();
+		sizes[propertyId] = Math.round(width);
+		this.config.set("columnSize", sizes);
+	}
+
+	private persistPropertyOrder(order: BasesPropertyId[]): void {
+		this.columnOrderOverride = [...order];
+		this.ignoreNextBasesOrderChange = true;
+		this.lastBasesOrderKey = order.join("\0");
+		try {
+			this.config.set("order", order);
+		} catch {
+			/* Bases may ignore unknown writes; local override still applies. */
+		}
+	}
+
+	private syncColumnWidthsFromConfig(): void {
+		const sizes = this.getColumnSizeMap();
+		this.columnWidths.clear();
+		for (const id of this.columnModel.order) {
+			this.columnWidths.set(id, resolveColumnWidth(this.app, id, sizes));
+		}
 	}
 
 	private render(): void {
@@ -444,11 +573,16 @@ export class StructureView extends BasesView {
 		const loc = getPluginLocale();
 		this.refreshToolbarI18n(loc);
 		this.filterQuery = this.searchInputEl?.value ?? "";
+		this.columnModel = splitVisibleProperties(this.getVisiblePropertyIds());
+		this.syncColumnWidthsFromConfig();
+		this.applyGridColumnTemplate();
 
 		const treeMount = this.treeMountEl;
 		if (!treeMount) return;
 
+		this.destroyCellControllers();
 		treeMount.empty();
+		this.renderColumnHeader();
 		this.lastPaintedActiveFilePath = "";
 
 		const entries = this.getAllEntries();
@@ -494,6 +628,162 @@ export class StructureView extends BasesView {
 		this.lastPaintedActiveFilePath = activePath;
 		this.ensureTreeLayoutObserver();
 		this.scheduleTreeConnectorLayout();
+	}
+
+	private applyGridColumnTemplate(): void {
+		const scroll = this.treeScrollEl;
+		if (!scroll) return;
+		const cols = this.columnModel.order.map((id) => {
+			const w = this.columnWidths.get(id) ?? resolveColumnWidth(this.app, id, {});
+			return `${w}px`;
+		});
+		const template = cols.length > 0 ? cols.join(" ") : "minmax(220px, 1fr)";
+		scroll.style.setProperty("--bases-structure-grid-cols", template);
+		scroll.toggleClass("has-property-columns", this.columnModel.tablePropertyIds.length > 0);
+	}
+
+	private renderColumnHeader(): void {
+		const header = this.headerEl;
+		if (!header) return;
+		header.empty();
+
+		const order = this.columnModel.order;
+		if (order.length === 0) {
+			const treeHead = header.createDiv({ cls: "bases-structure-header-cell is-tree" });
+			treeHead.createDiv({
+				cls: "bases-structure-header-label",
+				text: t(getPluginLocale(), "basesViewName"),
+			});
+			return;
+		}
+
+		order.forEach((propId, index) => {
+			const isTree = index === 0;
+			const cell = header.createDiv({
+				cls: "bases-structure-header-cell" + (isTree ? " is-tree" : ""),
+				attr: {
+					"data-property-id": propId,
+					draggable: "true",
+				},
+			});
+			const labelWrap = cell.createDiv({ cls: "bases-structure-header-label-wrap" });
+			const { type: propType, name: propName } = parseBasesPropertyKey(propId);
+			const iconEl = labelWrap.createDiv({ cls: "bases-structure-header-icon" });
+			setIcon(iconEl, getPropertyTypeIcon(this.app, propType, propName));
+			labelWrap.createDiv({
+				cls: "bases-structure-header-label",
+				text: this.config.getDisplayName(propId),
+			});
+			const resizer = cell.createDiv({ cls: "bases-structure-header-resizer" });
+			resizer.addEventListener("mousedown", (evt) => {
+				evt.preventDefault();
+				evt.stopPropagation();
+				this.beginColumnResize(propId, evt.clientX);
+			});
+			this.bindHeaderColumnDrag(cell, propId);
+		});
+	}
+
+	private beginColumnResize(propertyId: BasesPropertyId, startX: number): void {
+		const startWidth =
+			this.columnWidths.get(propertyId) ?? resolveColumnWidth(this.app, propertyId, {});
+		this.columnResizeState = { propertyId, startX, startWidth };
+		this.treeScrollEl?.addClass("is-resizing-columns");
+
+		const onMove = (evt: MouseEvent) => {
+			if (!this.columnResizeState) return;
+			const delta = evt.clientX - this.columnResizeState.startX;
+			const next = Math.max(40, this.columnResizeState.startWidth + delta);
+			this.columnWidths.set(this.columnResizeState.propertyId, next);
+			this.applyGridColumnTemplate();
+		};
+		const onUp = () => {
+			window.removeEventListener("mousemove", onMove);
+			window.removeEventListener("mouseup", onUp);
+			const state = this.columnResizeState;
+			this.columnResizeState = null;
+			this.treeScrollEl?.removeClass("is-resizing-columns");
+			if (state) {
+				const width = this.columnWidths.get(state.propertyId) ?? state.startWidth;
+				this.persistColumnSize(state.propertyId, width);
+			}
+			if (this.pendingRenderWhileFocused && this.focusedCellCount === 0) {
+				this.pendingRenderWhileFocused = false;
+				this.render();
+			}
+		};
+		window.addEventListener("mousemove", onMove);
+		window.addEventListener("mouseup", onUp);
+	}
+
+	private bindHeaderColumnDrag(cell: HTMLElement, propertyId: BasesPropertyId): void {
+		cell.addEventListener("dragstart", (evt) => {
+			if (this.columnResizeState) {
+				evt.preventDefault();
+				return;
+			}
+			evt.stopPropagation();
+			this.headerDragPropertyId = propertyId;
+			cell.addClass("is-dragging-header");
+			if (evt.dataTransfer) {
+				evt.dataTransfer.setData("text/plain", propertyId);
+				evt.dataTransfer.setData("application/x-bases-structure-column", propertyId);
+				evt.dataTransfer.effectAllowed = "move";
+			}
+		});
+		cell.addEventListener("dragend", (evt) => {
+			evt.stopPropagation();
+			this.headerDragPropertyId = null;
+			cell.removeClass("is-dragging-header");
+			this.clearHeaderDropHighlights();
+		});
+		cell.addEventListener("dragover", (evt) => {
+			const fromId =
+				this.headerDragPropertyId ??
+				(evt.dataTransfer?.types.includes("application/x-bases-structure-column")
+					? "pending"
+					: null);
+			if (!fromId || this.headerDragPropertyId === propertyId) return;
+			evt.preventDefault();
+			evt.stopPropagation();
+			if (evt.dataTransfer) evt.dataTransfer.dropEffect = "move";
+			this.clearHeaderDropHighlights();
+			cell.addClass("is-drop-target-header");
+		});
+		cell.addEventListener("dragleave", (evt) => {
+			if (!cell.contains(evt.relatedTarget as Node)) {
+				cell.removeClass("is-drop-target-header");
+			}
+		});
+		cell.addEventListener("drop", (evt) => {
+			evt.preventDefault();
+			evt.stopPropagation();
+			cell.removeClass("is-drop-target-header");
+			const fromData =
+				evt.dataTransfer?.getData("application/x-bases-structure-column") ||
+				evt.dataTransfer?.getData("text/plain") ||
+				"";
+			const fromId = (this.headerDragPropertyId ?? fromData) as BasesPropertyId;
+			this.headerDragPropertyId = null;
+			if (!fromId || fromId === propertyId) return;
+			if (!this.columnModel.order.includes(fromId)) return;
+			const order = [...this.columnModel.order];
+			const fromIdx = order.indexOf(fromId);
+			const toIdx = order.indexOf(propertyId);
+			if (fromIdx < 0 || toIdx < 0) return;
+			order.splice(fromIdx, 1);
+			order.splice(toIdx, 0, fromId);
+			this.persistPropertyOrder(order);
+			this.render();
+		});
+	}
+
+	private clearHeaderDropHighlights(): void {
+		const header = this.headerEl;
+		if (!header) return;
+		header.querySelectorAll(".is-drop-target-header").forEach((el) => {
+			el.removeClass("is-drop-target-header");
+		});
 	}
 
 	/**
@@ -663,6 +953,7 @@ export class StructureView extends BasesView {
 
 		const treeScroll = this.containerEl.createDiv({ cls: "bases-structure-tree-scroll" });
 		this.treeScrollEl = treeScroll;
+		this.headerEl = treeScroll.createDiv({ cls: "bases-structure-header" });
 		this.treeMountEl = treeScroll.createDiv({ cls: "bases-structure-tree" });
 		this.ensureTreeLayoutObserver();
 	}
@@ -846,9 +1137,8 @@ export class StructureView extends BasesView {
 	private nodeNameMatchesFilter(node: TreeNode): boolean {
 		const q = this.filterQuery.trim().toLowerCase();
 		if (!q) return false;
-		const hay = this.formatEntryRowLabel(node.entry).toLowerCase();
-		const base = node.entry.file.basename.toLowerCase();
-		return hay.includes(q) || base.includes(q);
+		const hay = formatEntryFilterText(node.entry, this.columnModel.order).toLowerCase();
+		return hay.includes(q);
 	}
 
 	/** Show node, path to matches, and full subtree under any matching node. */
@@ -905,33 +1195,41 @@ export class StructureView extends BasesView {
 	/**
 	 * Property column order from Bases: {@link BasesViewConfig.getOrder}, or visible
 	 * properties from the query when order is empty (see {@link BasesQueryResult.properties}).
+	 * Drag-reorder is applied via {@link columnOrderOverride}.
 	 */
 	private getVisiblePropertyIds(): BasesPropertyId[] {
 		const ordered = this.config?.getOrder() ?? [];
-		if (ordered.length > 0) {
-			return ordered;
-		}
-		return this.data?.properties ?? [];
-	}
+		const basesList =
+			ordered.length > 0 ? ordered : (this.data?.properties ?? []);
+		const basesKey = basesList.join("\0");
 
-	/** Text for the tree row: visible Bases columns joined, or basename if none / all empty. */
-	private formatEntryRowLabel(entry: BasesEntry): string {
-		const ids = this.getVisiblePropertyIds();
-		if (ids.length === 0) {
-			return entry.file.basename;
-		}
-		const parts: string[] = [];
-		for (const id of ids) {
-			const value = entry.getValue(id);
-			if (value == null || value instanceof NullValue) {
-				continue;
+		if (basesKey !== this.lastBasesOrderKey) {
+			if (this.ignoreNextBasesOrderChange) {
+				this.ignoreNextBasesOrderChange = false;
+			} else {
+				this.columnOrderOverride = null;
 			}
-			const s = value.toString().trim();
-			if (s.length > 0) {
-				parts.push(s);
+			this.lastBasesOrderKey = basesKey;
+		}
+
+		if (!this.columnOrderOverride || this.columnOrderOverride.length === 0) {
+			return [...basesList];
+		}
+
+		const remaining = new Set(basesList);
+		const merged: BasesPropertyId[] = [];
+		for (const id of this.columnOrderOverride) {
+			if (remaining.has(id)) {
+				merged.push(id);
+				remaining.delete(id);
 			}
 		}
-		return parts.length > 0 ? parts.join(" · ") : entry.file.basename;
+		for (const id of basesList) {
+			if (remaining.has(id)) {
+				merged.push(id);
+			}
+		}
+		return merged;
 	}
 
 	/**
@@ -1165,6 +1463,7 @@ export class StructureView extends BasesView {
 				"data-file-path": node.filePath,
 				"data-parent-path": node.parentPath ?? "",
 				"data-branch-key": node.branchKey,
+				"data-depth": String(node.depth),
 				...(hasChildren ? { "data-has-children": "true" } : {}),
 			},
 		});
@@ -1193,7 +1492,16 @@ export class StructureView extends BasesView {
 			(this.expandedBranchKeys.has(node.branchKey) ||
 				(filterActive && anyChildMatchesFilter));
 
-		const toggleWrap = rowEl.createDiv({ cls: "bases-structure-toggle-wrap" });
+		const treeCell = rowEl.createDiv({
+			cls: "bases-structure-tree-cell",
+			attr: { "data-depth": String(node.depth) },
+		});
+		treeCell.toggleClass("is-root", node.depth === 0);
+		treeCell.style.setProperty("--bases-structure-depth", String(node.depth));
+
+		const treeInner = treeCell.createDiv({ cls: "bases-structure-tree-inner" });
+
+		const toggleWrap = treeInner.createDiv({ cls: "bases-structure-toggle-wrap" });
 		if (hasChildren) {
 			const btn = toggleWrap.createEl("button", {
 				cls: "bases-structure-toggle clickable-icon",
@@ -1209,12 +1517,17 @@ export class StructureView extends BasesView {
 			toggleWrap.createSpan({ cls: "bases-structure-toggle-placeholder" });
 		}
 
-		const titleEl = rowEl.createDiv({ cls: "bases-structure-title" });
+		const titleEl = treeInner.createDiv({ cls: "bases-structure-title" });
+		const treeLabel = formatTreeLabel(node.entry, this.columnModel.treePropertyId);
 		const linkEl = titleEl.createEl("a", {
-			cls: "internal-link",
-			text: this.formatEntryRowLabel(node.entry),
+			cls: "internal-link" + (treeLabel.length === 0 ? " is-empty-label" : ""),
+			text: treeLabel.length > 0 ? treeLabel : "\u00A0",
 			/** Native link drags use `app://…` URLs in `text/plain`; row drag uses {@link setNoteDragPlainText}. */
-			attr: { href: node.filePath, draggable: "false" },
+			attr: {
+				href: node.filePath,
+				draggable: "false",
+				title: node.entry.file.basename,
+			},
 		});
 		linkEl.addEventListener("click", (evt) => {
 			if (evt.shiftKey) {
@@ -1227,16 +1540,43 @@ export class StructureView extends BasesView {
 			evt.preventDefault();
 			void this.app.workspace.openLinkText(node.filePath, "", evt.ctrlKey || evt.metaKey);
 		});
+		linkEl.addEventListener("mouseover", (evt) => {
+			this.app.workspace.trigger("hover-link", {
+				event: evt,
+				source: FILE_MENU_SOURCE,
+				hoverParent: this.app.renderContext,
+				targetEl: linkEl,
+				linktext: node.filePath,
+			});
+		});
 
-		rowEl.createDiv({
+		treeInner.createDiv({
 			cls: "bases-structure-counter",
 			text: `${node.descendantCount}`,
 		});
+
+		for (const propId of this.columnModel.tablePropertyIds) {
+			const cellEl = rowEl.createDiv({ cls: "bases-structure-cell" });
+			const controller = renderPropertyCell({
+				app: this.app,
+				cellEl,
+				entry: node.entry,
+				propertyId: propId,
+				onFocusChange: (focused) => this.onCellFocusChange(focused),
+				onBeforeWrite: () => this.onBeforeCellWrite(),
+			});
+			this.cellControllers.push(controller);
+		}
+
 		if (!hasChildren || !expanded) {
 			return;
 		}
 
-		const childrenEl = itemEl.createDiv({ cls: "bases-structure-children" });
+		const childrenEl = itemEl.createDiv({
+			cls: "bases-structure-children",
+			attr: { "data-parent-depth": String(node.depth) },
+		});
+		childrenEl.style.setProperty("--bases-structure-parent-depth", String(node.depth));
 		childrenEl.createDiv({
 			cls: "bases-structure-spine",
 			attr: {
