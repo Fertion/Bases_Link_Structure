@@ -275,7 +275,7 @@ export function mountNativePropertyWidget(options: {
 		);
 		if (!focusable) return;
 		focusable.focus();
-		if (focusable instanceof HTMLInputElement && focusable.type === "text") {
+		if (focusable.instanceOf(HTMLInputElement) && focusable.type === "text") {
 			focusable.select();
 		}
 	};

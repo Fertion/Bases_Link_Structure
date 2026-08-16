@@ -107,8 +107,7 @@ export type MessageKey = keyof typeof messages.en;
 /** Root `window.localStorage` key Obsidian uses for UI language (not vault-scoped `App#loadLocalStorage`). */
 function getObsidianLanguageCode(): string | null {
 	try {
-		const storage = globalThis.window?.localStorage;
-		return storage?.getItem("language") ?? null;
+		return window.localStorage.getItem("language");
 	} catch {
 		return null;
 	}
@@ -119,9 +118,11 @@ export function getPluginLocale(): PluginLocale {
 }
 
 export function t(locale: PluginLocale, key: MessageKey, vars?: Record<string, string>): string {
-	let template = messages[locale][key] as string;
+	let template: string = messages[locale][key];
 	if (vars) {
-		for (const [k, v] of Object.entries(vars)) {
+		for (const k of Object.keys(vars)) {
+			const v = vars[k];
+			if (v === undefined) continue;
 			template = template.split(`{${k}}`).join(v);
 		}
 	}

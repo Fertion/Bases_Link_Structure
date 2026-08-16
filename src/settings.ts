@@ -15,6 +15,14 @@ export class BasesStructureSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
+	/**
+	 * Declarative settings for Obsidian 1.13+ settings search.
+	 * No plugin-level options yet — configuration lives in the Bases view.
+	 */
+	getSettingDefinitions(): [] {
+		return [];
+	}
+
 	display(): void {
 		const { containerEl } = this;
 

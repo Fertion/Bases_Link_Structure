@@ -529,12 +529,13 @@ export class StructureView extends BasesView {
 	}
 
 	private getColumnSizeMap(): Record<string, number> {
-		const raw = this.config?.get("columnSize");
+		const raw: unknown = this.config?.get("columnSize");
 		if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
 			return {};
 		}
 		const out: Record<string, number> = {};
-		for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+		for (const key of Object.keys(raw)) {
+			const value: unknown = Reflect.get(raw, key);
 			if (typeof value === "number" && Number.isFinite(value) && value > 0) {
 				out[key] = value;
 			}
@@ -930,7 +931,7 @@ export class StructureView extends BasesView {
 			this.filterQuery = "";
 			this.updateSearchAdornments();
 			this.render();
-			requestAnimationFrame(() => searchInput.focus());
+			window.requestAnimationFrame(() => searchInput.focus());
 		});
 
 		searchInput.addEventListener("input", () => {
@@ -1122,7 +1123,7 @@ export class StructureView extends BasesView {
 		this.showActiveFileNextOccurrenceIndex = (idx + 1) % n;
 
 		this.render();
-		requestAnimationFrame(() => {
+		window.requestAnimationFrame(() => {
 			const { hasMatch, branchScrolled } = this.syncActiveFileHighlight(true, "center", {
 				scrollToBranchKey: targetBranchKey,
 			});

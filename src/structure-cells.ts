@@ -157,7 +157,6 @@ export function renderPropertyCell(options: RenderPropertyCellOptions): CellCont
 	const { type: propType, name: propKey } = parseBasesPropertyKey(propertyId);
 	const editable = propType === "note";
 	let mounted: MountedNativeWidget | null = null;
-	let writeTimer: number | undefined;
 	let destroyed = false;
 	let focused = false;
 
@@ -223,7 +222,7 @@ export function renderPropertyCell(options: RenderPropertyCellOptions): CellCont
 
 		const target = evt.target as HTMLElement;
 		const inListEditor = Boolean(target.closest(".multi-select-container"));
-		const isTextarea = target instanceof HTMLTextAreaElement;
+		const isTextarea = target.instanceOf(HTMLTextAreaElement);
 
 		// List / tags chips: Enter confirms a pill — let the native widget handle it.
 		if (inListEditor || isTextarea) {
