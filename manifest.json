@@ -1,7 +1,7 @@
 {
 	"id": "link-structure",
 	"name": "Link Structure",
-	"version": "1.0.3",
+	"version": "1.0.4",
 	"minAppVersion": "1.10.2",
 	"description": "Adds a Structure view for Bases that displays entries in a hierarchical tree based on the 'up' property.",
 	"author": "Fertion",
