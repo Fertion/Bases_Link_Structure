@@ -1,4 +1,4 @@
-# Bases Link Structure
+# Link Structure
 An Obsidian plugin for managing link-based note hierarchies. Adds a Structure view for Bases that displays notes as a draggable tree, built on the up property.
 
 <img width="1089" height="937" alt="image" src="https://github.com/user-attachments/assets/90291a90-370c-4949-96d9-49ed4a98aded" />
